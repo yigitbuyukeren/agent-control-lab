@@ -283,7 +283,7 @@ describe('Claude quota integration endpoints', () => {
     root = await mkdtemp(join(tmpdir(), 'acl gui claude '));
     await mkdir(join(root, 'claude'));
     const settingsPath = join(root, 'claude', 'settings.json');
-    if (settings !== undefined) await writeFile(settingsPath, JSON.stringify(settings));
+    if (settings !== undefined) await writeFile(settingsPath, typeof settings === 'string' ? settings : JSON.stringify(settings));
     const paths = { settingsPath, cacheDir: join(root, 'cache'), nodePath: '/usr/bin/node', binPath: '/opt/acl/bin/a.js' };
     const server = createGuiServer({ token: TOKEN, claude: fileClaudeIntegration(paths), run: () => Promise.resolve(0) });
     open.push(server);

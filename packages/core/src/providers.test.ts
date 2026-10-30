@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
+import { resolveWindowsExecutable } from './providers.ts';
 import {
   claudeCodeAdapter,
   codexAdapter,
+  createExec,
   detectProvider,
   detectProviders,
   parseVersion,
@@ -59,5 +61,28 @@ describe('detectProviders', () => {
       ['claude-code', true],
       ['codex', false],
     ]);
+  });
+});
+
+describe('resolveWindowsExecutable', () => {
+  const exists = (known: string[]) => (p: string) => known.includes(p);
+
+  it('searches PATH in order using PATHEXT, with case-insensitive env keys', () => {
+    const env = { Path: 'C:\\a;"C:\\b c"', PathExt: '.EXE;.CMD' };
+    expect(resolveWindowsExecutable('claude', env, exists(['C:\\b c\\claude.CMD', 'C:\\a\\claude.CMD']))).toBe(
+      'C:\\a\\claude.CMD',
+    );
+    expect(resolveWindowsExecutable('claude', env, exists(['C:\\b c\\claude.EXE']))).toBe('C:\\b c\\claude.EXE');
+  });
+
+  it('returns undefined when nothing matches', () => {
+    expect(resolveWindowsExecutable('claude', { PATH: 'C:\\a' }, exists([]))).toBeUndefined();
+  });
+});
+
+describe('createExec on win32', () => {
+  it('reports not-found without spawning when the command is not on PATH', async () => {
+    const exec = createExec({ platform: 'win32', env: { PATH: 'C:\\a' }, exists: () => false });
+    expect(await exec('claude', ['--version'], { timeoutMs: 1000 })).toEqual({ kind: 'not-found' });
   });
 });

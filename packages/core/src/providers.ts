@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process';
+import { statSync } from 'node:fs';
+import { win32 } from 'node:path';
 
 export interface ProviderAdapter {
   readonly id: string;
@@ -40,45 +42,104 @@ export const DEFAULT_TIMEOUT_MS = 5000;
 
 const MAX_OUTPUT_BYTES = 64 * 1024;
 
+type Env = Readonly<Record<string, string | undefined>>;
+
+function envValue(env: Env, name: string): string | undefined {
+  const key = Object.keys(env).find((k) => k.toLowerCase() === name.toLowerCase());
+  return key === undefined ? undefined : env[key];
+}
+
+function isFile(path: string): boolean {
+  return statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+}
+
+/** Finds `command` on PATH the way cmd.exe does (PATH order, then PATHEXT extensions). */
+export function resolveWindowsExecutable(
+  command: string,
+  env: Env,
+  exists: (path: string) => boolean = isFile,
+): string | undefined {
+  const dirs = (envValue(env, 'PATH') ?? '')
+    .split(';')
+    .map((dir) => dir.trim().replace(/^"(.*)"$/, '$1'))
+    .filter((dir) => dir !== '');
+  const exts = (envValue(env, 'PATHEXT') ?? '.COM;.EXE;.BAT;.CMD').split(';').filter((e) => e !== '');
+  for (const dir of dirs) {
+    for (const ext of exts) {
+      const candidate = win32.join(dir, command + ext);
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return undefined;
+}
+
+export interface ExecOptions {
+  readonly platform?: NodeJS.Platform;
+  readonly env?: Env;
+  readonly exists?: (path: string) => boolean;
+}
+
 /**
- * Runs a fixed command with a timeout and no stdin. On Windows npm-installed CLIs are
- * `.cmd` shims, which `execFile` cannot start without a shell; command names and args
- * come only from adapters, never from user input.
+ * Builds an Exec that runs a fixed command with a timeout and no stdin. On Windows the
+ * command is resolved on PATH first (so "not installed" never depends on an exit code);
+ * `.cmd`/`.bat` shims, which npm-installed CLIs use, run through cmd.exe. Command names
+ * and args come only from adapters, never from user input.
  */
-export const defaultExec: Exec = (command, args, { timeoutMs }) =>
-  new Promise((resolve) => {
-    const windows = process.platform === 'win32';
-    const child = execFile(
-      command,
-      [...args],
-      {
-        timeout: timeoutMs,
-        killSignal: 'SIGKILL',
-        maxBuffer: MAX_OUTPUT_BYTES,
-        windowsHide: true,
-        shell: windows,
-        encoding: 'utf8',
-      },
-      (error, stdout) => {
-        if (error === null) {
-          resolve({ kind: 'ok', stdout });
+export function createExec(options: ExecOptions = {}): Exec {
+  const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  return (command, args, { timeoutMs }) =>
+    new Promise((resolve) => {
+      let file = command;
+      let fileArgs = [...args];
+      let verbatim = false;
+      if (platform === 'win32') {
+        const resolved = resolveWindowsExecutable(command, env, options.exists);
+        if (resolved === undefined) {
+          resolve({ kind: 'not-found' });
           return;
         }
-        const code: unknown = (error as { code?: unknown }).code;
-        if (code === 'ENOENT') {
-          resolve({ kind: 'not-found' });
-        } else if ((error as { killed?: boolean }).killed === true) {
-          resolve({ kind: 'timeout' });
-        } else if (windows && (code === 1 || code === 9009)) {
-          // cmd.exe reports an unknown command this way.
-          resolve({ kind: 'not-found' });
+        const ext = win32.extname(resolved).toLowerCase();
+        if (ext === '.cmd' || ext === '.bat') {
+          file = envValue(env, 'ComSpec') ?? 'cmd.exe';
+          fileArgs = ['/d', '/s', '/c', `""${resolved}" ${args.join(' ')}"`];
+          verbatim = true;
         } else {
-          resolve({ kind: 'failed', detail: error.message.split('\n')[0] ?? 'unknown error' });
+          file = resolved;
         }
-      },
-    );
-    child.stdin?.end();
-  });
+      }
+      const child = execFile(
+        file,
+        fileArgs,
+        {
+          env: { ...env },
+          timeout: timeoutMs,
+          killSignal: 'SIGKILL',
+          maxBuffer: MAX_OUTPUT_BYTES,
+          windowsHide: true,
+          windowsVerbatimArguments: verbatim,
+          encoding: 'utf8',
+        },
+        (error, stdout) => {
+          if (error === null) {
+            resolve({ kind: 'ok', stdout });
+            return;
+          }
+          const code: unknown = (error as { code?: unknown }).code;
+          if (code === 'ENOENT') {
+            resolve({ kind: 'not-found' });
+          } else if ((error as { killed?: boolean }).killed === true) {
+            resolve({ kind: 'timeout' });
+          } else {
+            resolve({ kind: 'failed', detail: error.message.split('\n')[0] ?? 'unknown error' });
+          }
+        },
+      );
+      child.stdin?.end();
+    });
+}
+
+export const defaultExec: Exec = createExec();
 
 export interface ProviderStatus {
   readonly id: string;

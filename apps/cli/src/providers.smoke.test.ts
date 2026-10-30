@@ -215,4 +215,34 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
       rmSync(plain, { recursive: true, force: true });
     }
   });
+
+  it('run --provider claude refuses without --confirm and when claude is absent, never calling a model', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'acl-smoke-claude-'));
+    try {
+      const env: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined && key.toLowerCase() !== 'path') env[key] = value;
+      }
+      env['PATH'] = join(cache, 'no-binaries-here');
+      const attempt = (extra: string[]) => {
+        try {
+          const stdout = execFileSync(process.execPath, [bin, 'run', '--provider', 'claude', '--task', 'x', ...extra], { env, encoding: 'utf8', stdio: 'pipe', timeout: 20000 });
+          return { code: 0, stderr: '', stdout };
+        } catch (error) {
+          const e = error as { status: number; stderr: string; stdout: string };
+          return { code: e.status, stderr: e.stderr, stdout: e.stdout };
+        }
+      };
+      expect(attempt([]).code).toBe(2);
+      const missing = attempt(['--confirm']);
+      expect(missing.code).toBe(1);
+      expect(missing.stderr).toContain('run refused: claude is not installed');
+      const dry = attempt(['--dry-run']);
+      expect(dry.code).toBe(1);
+      expect(dry.stdout).toContain('tools: none (built-in and MCP disabled)');
+      expect(dry.stdout).toContain('would refuse: claude is not installed');
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { resolveWindowsExecutable } from './providers.ts';
+import { quoteForCmd, resolveLaunch, resolveWindowsExecutable } from './providers.ts';
 import {
   claudeCodeAdapter,
   codexAdapter,
@@ -84,5 +84,34 @@ describe('createExec on win32', () => {
   it('reports not-found without spawning when the command is not on PATH', async () => {
     const exec = createExec({ platform: 'win32', env: { PATH: 'C:\\a' }, exists: () => false });
     expect(await exec('claude', ['--version'], { timeoutMs: 1000 })).toEqual({ kind: 'not-found' });
+  });
+});
+
+describe('cmd.exe shim launch', () => {
+  const launch = (args: string[]) =>
+    resolveLaunch('claude', args, { platform: 'win32', env: { PATH: 'C:\\bin', ComSpec: 'cmd.exe' }, exists: (p) => p === 'C:\\bin\\claude.CMD' });
+
+  it('keeps empty and spaced arguments as quoted tokens', () => {
+    expect(launch(['-p', '--tools', '', '--note', 'a b'])).toEqual({
+      file: 'cmd.exe',
+      args: ['/d', '/s', '/c', '""C:\\bin\\claude.CMD" -p --tools "" --note "a b""'],
+      verbatim: true,
+    });
+  });
+
+  it('refuses arguments cmd.exe would interpret', () => {
+    for (const bad of ['a&b', 'a|b', 'a>b', '%PATH%', 'a^b', 'x"y', 'a!b']) {
+      expect(() => quoteForCmd(bad)).toThrow(TypeError);
+      expect(() => launch([bad])).toThrow(TypeError);
+    }
+  });
+
+  it('does not touch non-shim executables or POSIX launches', () => {
+    expect(resolveLaunch('claude', ['--tools', ''], { platform: 'linux', env: {} })).toEqual({ file: 'claude', args: ['--tools', ''], verbatim: false });
+    expect(resolveLaunch('claude', ['--tools', ''], { platform: 'win32', env: { PATH: 'C:\\bin' }, exists: (p) => p === 'C:\\bin\\claude.EXE' })).toEqual({
+      file: 'C:\\bin\\claude.EXE',
+      args: ['--tools', ''],
+      verbatim: false,
+    });
   });
 });

@@ -191,7 +191,7 @@ describe('cli', () => {
     it('refuses without --confirm, for other providers and for bad options, never spawning', async () => {
       for (const argv of [
         START.filter((a) => a !== '--confirm'),
-        ['run', '--provider', 'claude', '--task', 'x', '--confirm'],
+        ['run', '--provider', 'openai', '--task', 'x', '--confirm'],
         ['run', '--task', 'x', '--confirm'],
         ['run', '--provider', 'codex', '--confirm'],
         [...START, '--mode', 'ultracode'],
@@ -332,6 +332,137 @@ describe('cli', () => {
       expect(bad.code).toBe(1);
       expect(bad.error).toContain('working directory does not exist');
       expect(bad.specs).toHaveLength(0);
+    });
+  });
+
+  describe('run --provider claude', () => {
+    const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
+    const claudeExec = (auth: { stdout: string; kind?: 'ok' | 'failed' | 'not-found' }, version = '2.1.312 (Claude Code)'): Exec => (command, args) => {
+      if (command !== 'claude') return Promise.resolve({ kind: 'not-found' });
+      if (args[0] === '--version') return Promise.resolve({ kind: 'ok', stdout: version });
+      if (auth.kind === 'not-found') return Promise.resolve({ kind: 'not-found' });
+      return Promise.resolve(
+        auth.kind === 'failed' ? { kind: 'failed', detail: 'x', stdout: auth.stdout, stderr: '' } : { kind: 'ok', stdout: auth.stdout },
+      );
+    };
+    const START = ['run', '--provider', 'claude', '--task', 'summarize this', '--confirm'];
+
+    async function go(argv: string[], over: { exec?: Exec; outcome?: ProcessOutcome } = {}) {
+      const specs: ProcessSpec[] = [];
+      let out = '';
+      let error = '';
+      const dir = mkdtempSync(join(tmpdir(), 'acl-claude-run-'));
+      try {
+        const code = await run(
+          argv,
+          { out: (t) => (out += t), error: (t) => (error += t) },
+          {
+            exec: over.exec ?? claudeExec({ stdout: AUTH_PRO }),
+            cwd: dir,
+            runner: (spec) => {
+              specs.push(spec);
+              return Promise.resolve(over.outcome ?? { kind: 'completed', exitCode: 0, stdout: 'answer\n', truncated: false });
+            },
+          },
+        );
+        return { code, out, error, specs };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it('runs tool-less with a cleaned environment and prints only the answer on stdout', async () => {
+      const r = await go(START);
+      expect(r.code).toBe(0);
+      expect(r.out).toBe('answer\n');
+      expect(r.error).toContain('no tools, no session persistence, subscription login');
+      expect(r.specs[0]).toMatchObject({ command: 'claude', input: 'summarize this' });
+      expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-p', '--tools', '', '--strict-mcp-config', '--safe-mode', '--no-session-persistence']));
+      expect(Object.keys(r.specs[0]?.env ?? {}).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_)/i.test(k) && k !== 'CLAUDE_CONFIG_DIR')).toEqual([]);
+      expect(r.error).not.toContain('example.com');
+    });
+
+    it('refuses API-key, third-party, non-Pro/Max, logged-out and missing logins', async () => {
+      const cases: [Parameters<typeof claudeExec>[0], string][] = [
+        [{ stdout: '{"loggedIn":true,"authMethod":"api_key"}' }, 'only a Pro/Max subscription login is allowed'],
+        [{ stdout: '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"bedrock","subscriptionType":"pro"}' }, 'third-party provider'],
+        [{ stdout: '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"free"}' }, 'not signed in with a verified Pro/Max subscription'],
+        [{ stdout: '{"loggedIn":false}', kind: 'failed' }, 'claude is not logged in'],
+        [{ stdout: '', kind: 'not-found' }, 'claude is not installed'],
+        [{ stdout: 'weird' }, 'login state could not be determined'],
+      ];
+      for (const [auth, message] of cases) {
+        const r = await go(START, { exec: claudeExec(auth) });
+        expect(r.code).toBe(1);
+        expect(r.error).toContain(`run refused: claude`);
+        expect(r.error).toContain(message);
+        expect(r.specs).toHaveLength(0);
+      }
+    });
+
+    it('requires --accept-unverified for unverified choices and never lets it override blocking ones', async () => {
+      for (const extra of [['--model', 'claude-opus-5-5'], ['--effort', 'high'], ['--mode', 'ultracode']]) {
+        const denied = await go([...START, ...extra]);
+        expect(denied.code).toBe(1);
+        expect(denied.error).toContain('add --accept-unverified');
+        expect(denied.specs).toHaveLength(0);
+        const accepted = await go([...START, ...extra, '--accept-unverified']);
+        expect(accepted.code).toBe(0);
+        expect(accepted.error).toContain('warning:');
+      }
+      for (const extra of [['--effort', 'ultra'], ['--mode', 'ultracode', '--effort', 'high']]) {
+        const blocked = await go([...START, ...extra, '--accept-unverified']);
+        expect(blocked.code).toBe(1);
+        expect(blocked.error).toContain('[blocking]');
+        expect(blocked.specs).toHaveLength(0);
+      }
+    });
+
+    it('passes ultracode as --effort ultracode, and gates it on the CLI version', async () => {
+      const ok = await go([...START, '--mode', 'ultracode', '--accept-unverified']);
+      expect(ok.specs[0]?.args.slice(-2)).toEqual(['--effort', 'ultracode']);
+      const old = await go([...START, '--mode', 'ultracode', '--accept-unverified'], { exec: claudeExec({ stdout: AUTH_PRO }, '2.1.100 (Claude Code)') });
+      expect(old.code).toBe(1);
+      expect(old.error).toContain('older than the verified minimum for ultracode');
+      expect(old.specs).toHaveLength(0);
+    });
+
+    it('dry-run shows the plan without starting anything or needing --confirm', async () => {
+      const r = await go(['run', '--provider', 'claude', '--task', 'summarize this', '--dry-run', '--effort', 'high']);
+      expect(r.code).toBe(1);
+      expect(r.specs).toHaveLength(0);
+      expect(r.out).toContain('run plan (dry run, no agent started)');
+      expect(r.out).toContain('tools: none (built-in and MCP disabled)');
+      expect(r.out).toContain('session persistence: off');
+      expect(r.out).toContain('login: subscription login (pro)');
+      expect(r.out).toContain('cli version: 2.1.312');
+      expect(r.out).toContain('requires: --confirm, --accept-unverified');
+      expect(r.out).toContain('would refuse');
+      expect(r.out).not.toMatch(/summarize|example\.com/);
+      const clean = await go(['run', '--provider', 'claude', '--task', 'x', '--dry-run']);
+      expect(clean.code).toBe(0);
+      expect(clean.out).toContain('verdict: would run');
+    });
+
+    it('uses fixed messages for runner failures and rejects bad options before anything runs', async () => {
+      const cases: [ProcessOutcome, string, number][] = [
+        [{ kind: 'completed', exitCode: 1, stdout: 'sk-leak', truncated: false }, 'claude run failed', 1],
+        [{ kind: 'timeout' }, 'claude run timed out', 1],
+        [{ kind: 'cancelled' }, 'claude run cancelled', 130],
+        [{ kind: 'spawn-failed' }, 'claude could not be started', 1],
+      ];
+      for (const [outcome, message, code] of cases) {
+        const r = await go(START, { outcome });
+        expect(r.code).toBe(code);
+        expect(r.error).toContain(message);
+        expect(r.out).toBe('');
+        expect(r.error).not.toContain('leak');
+      }
+      for (const argv of [START.filter((a) => a !== '--confirm'), [...START, '--mode', 'turbo'], [...START, '--effort', 'ultracode'], [...START, '--tools', 'Bash']]) {
+        const r = await go(argv);
+        expect(r.code).toBe(2);
+        expect(r.specs).toHaveLength(0);
+      }
     });
   });
 

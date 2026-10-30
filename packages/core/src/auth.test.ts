@@ -29,6 +29,18 @@ describe('parseClaudeAuth', () => {
   });
 });
 
+describe('parseClaudeAuth: third-party providers', () => {
+  it('never treats a non-firstParty provider as a subscription', () => {
+    expect(parseClaudeAuth(out('{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"bedrock","subscriptionType":"pro"}'))).toEqual({
+      state: 'logged-in',
+      method: 'third-party',
+    });
+    expect(parseClaudeAuth(out('{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro"}'))).toMatchObject({
+      method: 'subscription',
+    });
+  });
+});
+
 describe('parseCodexAuth', () => {
   it('parses known lines from stdout or stderr', () => {
     expect(parseCodexAuth(out('Logged in using ChatGPT\n'))).toEqual({ state: 'logged-in', method: 'subscription' });

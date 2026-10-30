@@ -2,7 +2,7 @@ import type { Exec, ProviderAdapter } from './providers.ts';
 import { DEFAULT_TIMEOUT_MS, defaultExec } from './providers.ts';
 
 export type AuthState = 'logged-in' | 'logged-out' | 'unknown' | 'not-installed' | 'error';
-export type AuthMethod = 'subscription' | 'api-key' | 'unknown';
+export type AuthMethod = 'subscription' | 'api-key' | 'third-party' | 'unknown';
 
 export interface AuthOutput {
   readonly stdout: string;
@@ -50,6 +50,11 @@ export function parseClaudeAuth({ stdout }: AuthOutput): ParsedAuth {
   if (record['loggedIn'] === false) return { state: 'logged-out' };
   if (record['loggedIn'] !== true) return UNKNOWN;
   const authMethod = record['authMethod'];
+  // Bedrock, Vertex and similar report a provider other than `firstParty`; never a subscription.
+  const apiProvider = record['apiProvider'];
+  if (typeof apiProvider === 'string' && apiProvider !== 'firstParty') {
+    return { state: 'logged-in', method: 'third-party' };
+  }
   if (authMethod === 'claude.ai') {
     const plan = record['subscriptionType'];
     return typeof plan === 'string' && KNOWN_PLANS.has(plan)

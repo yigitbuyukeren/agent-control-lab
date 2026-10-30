@@ -119,9 +119,9 @@ export interface CodexRunDeps {
 }
 
 // eslint-disable-next-line no-control-regex
-const CONTROL = /\u001b\[[0-9;?]*[ -/]*[@-~]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
+export const CONTROL = /\u001b\[[0-9;?]*[ -/]*[@-~]|[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g;
 
-function sanitize(text: string): string {
+export function sanitize(text: string): string {
   return text.replace(CONTROL, '');
 }
 

@@ -143,6 +143,18 @@ describe('ultracode on Codex is a definite incompatibility', () => {
   });
 });
 
+describe('Claude ultracode', () => {
+  it('conflicts with an explicit effort, because the CLI takes both through --effort', () => {
+    const s = resolveSelection('claude', req({ mode: 'ultracode', effort: 'high' }), catalog());
+    expect(s.issues).toContainEqual({ code: 'mode-effort-conflict', blocking: true, mode: 'ultracode', effort: 'high' });
+    expect(s.blocked).toBe(true);
+  });
+  it('is only unverified (not blocked) when requested alone', () => {
+    const s = resolveSelection('claude', req({ mode: 'ultracode' }), catalog());
+    expect(s).toMatchObject({ blocked: false, manualApprovalRequired: true });
+  });
+});
+
 describe('provider preservation and purity', () => {
   it('echoes the chosen provider and does not mutate the catalog', () => {
     const frozen = Object.freeze(catalog());

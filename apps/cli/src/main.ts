@@ -16,7 +16,13 @@ import {
   availabilityFromAuth,
   checkEffort,
   checkGitRepo,
+  claudeCodeAdapter,
+  claudeRunEnv,
   codexAdapter,
+  createExec,
+  detectProvider,
+  planClaudeRun,
+  runClaude,
   detectAuth,
   planCodexRun,
   runCodex,
@@ -44,6 +50,7 @@ import {
   type ProcessRunner,
   type RefusalReason,
   type CodexRunOutcome,
+  type ClaudeRefusalReason,
   type GitState,
   type ProviderPreference,
   type ProviderQuota,
@@ -72,7 +79,9 @@ Commands:
   quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
   run --provider codex --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--cwd <dir>] [--timeout <seconds>]
                         Run Codex read-only inside a Git repository (subscription login only, no API-key fallback)
-  run --provider codex --task "<text>" --dry-run [...]
+  run --provider claude --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode] [--cwd <dir>] [--timeout <seconds>]
+                        Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
+  run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
   models check <claude|codex> <model> <effort>
@@ -288,6 +297,8 @@ function describeIssue(issue: SelectionIssue): string {
       return `effort-unverified [${flag}] ${issue.effort} (${issue.reason})`;
     case 'mode-unsupported':
       return `mode-unsupported [${flag}] ${issue.mode}`;
+    case 'mode-effort-conflict':
+      return `mode-effort-conflict [${flag}] ${issue.mode} cannot be combined with --effort ${issue.effort}`;
     case 'mode-unverified':
       return `mode-unverified [${flag}] ${issue.mode}`;
   }
@@ -343,6 +354,7 @@ function formatEffortCheck(check: EffortCheck): string {
 }
 
 interface RunArgs {
+  readonly provider: 'codex' | 'claude';
   readonly task: string;
   readonly request: SelectionRequest;
   readonly cwd: string | undefined;
@@ -357,6 +369,7 @@ function parseRunArgs(args: readonly string[]): RunArgs | string {
   let confirm = false;
   let dryRun = false;
   let acceptUnverified = false;
+  let mode: SelectionRequest['mode'] = 'normal';
   let cwd: string | undefined;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
   let model: string = DEFAULT_REQUEST.model;
@@ -393,18 +406,18 @@ function parseRunArgs(args: readonly string[]): RunArgs | string {
       if (problem !== undefined || value === undefined) return problem ?? '--effort must be auto or a level';
       effort = value;
     } else if (arg === '--mode') {
-      // Codex has no ultracode mode, so the only run mode is normal.
       const value = args[(i += 1)];
-      if (value === 'ultracode') return 'ultracode is not supported for Codex';
-      if (value !== 'normal') return '--mode must be normal';
+      if (value !== 'normal' && value !== 'ultracode') return '--mode must be normal or ultracode';
+      mode = value;
     } else {
       return `unknown run option: ${arg ?? ''}`;
     }
   }
-  if (provider !== 'codex') return 'only --provider codex is supported';
+  if (provider !== 'codex' && provider !== 'claude') return '--provider must be codex or claude';
+  if (provider === 'codex' && mode === 'ultracode') return 'ultracode is not supported for Codex';
   if (task === undefined) return '--task "<text>" is required';
   if (!confirm && !dryRun) return 'run needs --confirm: it starts a real, billed Codex session';
-  return { task, request: { model, effort, mode: 'normal' }, cwd, timeoutMs, dryRun, acceptUnverified };
+  return { provider, task, request: { model, effort, mode }, cwd, timeoutMs, dryRun, acceptUnverified };
 }
 
 const REFUSALS: Record<RefusalReason, string> = {
@@ -422,6 +435,19 @@ const REFUSALS: Record<RefusalReason, string> = {
   'selection-blocked': 'the model/effort selection is blocked',
 };
 
+const CLAUDE_REFUSALS: Record<ClaudeRefusalReason, string> = {
+  'task-invalid': 'the task text is empty, too long or invalid',
+  'claude-not-installed': 'claude is not installed',
+  'not-logged-in': 'claude is not logged in',
+  'login-state-unknown': 'claude login state could not be determined',
+  'api-key-login': 'claude is using an API key; only a Pro/Max subscription login is allowed',
+  'third-party-provider': 'claude is using a third-party provider; only a Pro/Max subscription login is allowed',
+  'not-a-subscription-plan': 'claude is not signed in with a verified Pro/Max subscription',
+  'claude-version-unsupported': 'this Claude Code version is older than the verified minimum for ultracode',
+  'selection-blocked': 'the model/effort/mode selection is blocked',
+  'unverified-selection': 'the model/effort/mode selection could not be verified; add --accept-unverified to run anyway',
+};
+
 const RUN_FAILURES: Record<Exclude<CodexRunOutcome['kind'], 'completed'>, string> = {
   failed: 'codex run failed',
   timeout: 'codex run timed out',
@@ -429,6 +455,55 @@ const RUN_FAILURES: Record<Exclude<CodexRunOutcome['kind'], 'completed'>, string
   'not-installed': 'codex is not installed',
   'spawn-failed': 'codex could not be started',
 };
+
+async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<number> {
+  const cwd = await validateWorkingDir(args.cwd ?? deps.cwd ?? process.cwd());
+  if (cwd === undefined) {
+    io.error('run refused: the working directory does not exist\n');
+    return 1;
+  }
+  // Probe with the same cleaned environment the run will use, so an API key in the caller's
+  // environment cannot make the check pass or fail differently from the real run.
+  const exec = deps.exec ?? createExec({ env: claudeRunEnv(process.env) });
+  const [auth, provider] = await Promise.all([detectAuth(claudeCodeAdapter, exec), detectProvider(claudeCodeAdapter, exec)]);
+  const selection = resolveSelection('claude', args.request, { claude: claudeRegistry, codex: { state: 'ok', models: [] } });
+  const plan = planClaudeRun({ task: args.task, auth, selection, version: provider.version, acceptUnverified: args.acceptUnverified });
+  if (args.dryRun) {
+    const login = auth.state === 'logged-in' ? `${auth.method ?? 'unknown'} login${auth.plan === undefined ? '' : ` (${auth.plan})`}` : auth.state;
+    const required = ['--confirm', ...(selection.issues.length > 0 && !selection.blocked ? ['--accept-unverified'] : [])];
+    io.out(
+      'run plan (dry run, no agent started)\n' +
+        `  provider: claude\n  cwd: ${cwd}\n  tools: none (built-in and MCP disabled)\n  session persistence: off\n` +
+        `  login: ${login}\n  cli version: ${provider.version ?? 'unknown'}\n` +
+        `  model: ${describePinned(selection.model)}\n  effort: ${describePinned(selection.effort)}\n` +
+        `  mode: ${selection.mode}\n  timeout: ${String(args.timeoutMs / 1000)}s\n  task: ${String(args.task.length)} characters\n` +
+        selection.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join('') +
+        `  requires: ${required.join(', ')}\n` +
+        `  verdict: ${plan.ok ? 'would run' : `would refuse: ${CLAUDE_REFUSALS[plan.reason]}`}\n`,
+    );
+    return plan.ok ? 0 : 1;
+  }
+  if (!plan.ok) {
+    io.error(`run refused: ${CLAUDE_REFUSALS[plan.reason]}\n${plan.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join('')}`);
+    return 1;
+  }
+  io.error(
+    `running claude (no tools, no session persistence, subscription login) in ${cwd}\n` +
+      `  model: ${describePinned(selection.model)}\n  effort: ${describePinned(selection.effort)}\n  mode: ${selection.mode}\n` +
+      plan.warnings.map((i) => `  warning: ${describeIssue(i)}\n`).join(''),
+  );
+  const outcome = await runClaude(
+    { task: args.task, cwd, selection, timeoutMs: args.timeoutMs, ...(deps.signal === undefined ? {} : { signal: deps.signal }) },
+    deps.runner === undefined ? {} : { runner: deps.runner },
+  );
+  if (outcome.kind !== 'completed') {
+    io.error(`${RUN_FAILURES[outcome.kind].replace('codex', 'claude')}\n`);
+    return outcome.kind === 'cancelled' ? 130 : 1;
+  }
+  io.out(outcome.output.endsWith('\n') ? outcome.output : `${outcome.output}\n`);
+  if (outcome.truncated) io.error('output was truncated\n');
+  return 0;
+}
 
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   const parsed = parseCommand(argv);
@@ -563,6 +638,7 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         io.error(`${args}\n`);
         return 2;
       }
+      if (args.provider === 'claude') return runClaudeCommand(args, io, deps);
       const cwd = await validateWorkingDir(args.cwd ?? deps.cwd ?? process.cwd());
       if (cwd === undefined) {
         io.error('run refused: the working directory does not exist\n');

@@ -57,6 +57,8 @@ export type SelectionIssue =
       readonly reason: EffortUnverifiedReason;
     }
   | { readonly code: 'mode-unsupported'; readonly blocking: true; readonly mode: 'ultracode' }
+  /** Claude's CLI takes ultracode through its effort flag, so an explicit effort cannot be combined. */
+  | { readonly code: 'mode-effort-conflict'; readonly blocking: true; readonly mode: 'ultracode'; readonly effort: string }
   | { readonly code: 'mode-unverified'; readonly blocking: false; readonly mode: 'ultracode' };
 
 export type Pinned =
@@ -161,6 +163,9 @@ export function resolveSelection(
   if (request.mode === 'ultracode') {
     // Codex has no ultracode mode at all: that is a definite incompatibility, not an unknown.
     const support: ModeSupport = provider === 'codex' ? 'unsupported' : modeSupport(modelCapability);
+    if (provider === 'claude' && request.effort !== 'auto') {
+      issues.push({ code: 'mode-effort-conflict', blocking: true, mode: 'ultracode', effort: request.effort });
+    }
     issues.push(
       support === 'unsupported'
         ? { code: 'mode-unsupported', blocking: true, mode: 'ultracode' }

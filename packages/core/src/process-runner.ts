@@ -65,7 +65,13 @@ export const runProcess: ProcessRunner = (spec) =>
       resolve({ kind: 'cancelled' });
       return;
     }
-    const launch = resolveLaunch(spec.command, spec.args, { platform, env: spec.env });
+    let launch: ReturnType<typeof resolveLaunch>;
+    try {
+      launch = resolveLaunch(spec.command, spec.args, { platform, env: spec.env });
+    } catch {
+      resolve({ kind: 'spawn-failed' });
+      return;
+    }
     if (launch === undefined) {
       resolve({ kind: 'not-found' });
       return;

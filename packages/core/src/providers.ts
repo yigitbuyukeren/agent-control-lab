@@ -89,6 +89,15 @@ export interface ExecOptions {
   readonly exists?: (path: string) => boolean;
 }
 
+/** Characters that cmd.exe would interpret; arguments containing them are never passed. */
+const CMD_METACHARACTERS = /["&|<>^%!\r\n\0]/;
+
+/** Quotes an argument for a cmd.exe command line: empty and spaced values need quotes. */
+export function quoteForCmd(arg: string): string {
+  if (CMD_METACHARACTERS.test(arg)) throw new TypeError('unsafe argument for cmd.exe');
+  return arg === '' || /\s/.test(arg) ? `"${arg}"` : arg;
+}
+
 export interface Launch {
   readonly file: string;
   readonly args: readonly string[];
@@ -115,7 +124,7 @@ export function resolveLaunch(
   if (ext === '.cmd' || ext === '.bat') {
     return {
       file: envValue(env, 'ComSpec') ?? 'cmd.exe',
-      args: ['/d', '/s', '/c', `""${resolved}" ${args.join(' ')}"`],
+      args: ['/d', '/s', '/c', `""${resolved}"${args.map((arg) => ` ${quoteForCmd(arg)}`).join('')}"`],
       verbatim: true,
     };
   }

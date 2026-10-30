@@ -292,3 +292,35 @@ It makes no model call and runs no benchmark.
   OpenAI's DeepSWE difference compares unnamed efforts; its AutomationBench and OSWorld differences are not coding. The
   provider default is kept, and the evidence shown explains why. To update, add entries from a page you opened, with its
   URL and date, state only what it states, and bump the catalog version.
+
+## Guided routing: `--model-routing guided`
+
+`research` stays exactly as it is (strict benchmark evidence only). `guided` adds a second, clearly labelled basis for when
+that evidence is not enough, and shows both.
+
+1. **Measured benchmark evidence first,** with the same strict rules as `research` (same benchmark, version, harness and effort;
+   task-fit; dated; independent or doubly confirmed). If it recommends a listed Codex model, that model is used, the basis is
+   `measured benchmark evidence` and the uncertainty is `low`. The dry run also shows what the documented intent would have chosen
+   and whether it agrees.
+2. **Otherwise an intent-based choice from vendor documentation** (basis `documented intent of the model (vendor documentation),
+   not a measurement`, uncertainty `medium`), from `packages/core/src/model-guide.ts` (version `2026-10-31.1`). It records what
+   OpenAI (API guide, Codex models page, GPT-6.1 Terra launch page) and Anthropic (models overview) say each model is for, and
+   the few relations they state between models. Nothing else is assumed: no price, no benchmark, no ranking of its own.
+3. **Otherwise the provider default** (uncertainty `high`), with the reason.
+
+How the intent-based choice is made (all heuristics are labelled as such in the dry run):
+
+- **Kind of work:** `implement` is coding, `plan` and `review` are professional work; a task the size/risk heuristics call easy is
+  `focused`, anything else `complex`. Under `--policy quality` an easy task is not treated as focused (no downsizing).
+- **Suited models:** only models the provider lists now **and** that the documentation names for that kind of work, minus
+  those the vendor says are less suited (for example OpenAI says GPT-6.1 Terra is not the better choice for the most complex
+  coding, so Terra is never picked for it). A listed model with no documented purpose is ignored.
+- **Policy decides among several suited models,** using only stated relations: `quality` takes the one documented as the most
+  capable (Astra over Sol), `economy` the one documented as the more efficient (Sol over Astra, Luna over the rest),
+  `balanced` the one the vendor itself labels as a balance of speed, cost and intelligence (Sol). If the documentation does
+  not settle it, the default is kept.
+- **Then** the chosen model's effort comes from `--policy` as usual.
+- **Claude:** never pinned, access is UNKNOWN; at most advice appears in the dry run. **Manual** `--step-model` / `--step-effort`
+  always win, and ultracode is never selected.
+- The documentation pages state no date; the guide records when they were read (2026-10-31). Vendor descriptions are
+  marketing-adjacent intent, not proof of performance on your task; that is why this basis carries medium uncertainty at best.

@@ -5,6 +5,7 @@ import {
   classifyTask,
   decideEffort,
   difficultyOf,
+  guideModel,
   ladderLevel,
   recommendFromEvidence,
   wantedLevel,
@@ -22,6 +23,7 @@ import {
   type OutcomeStore,
   type PolicyName,
   type ProviderQuota,
+  type SelectionStep,
   type QuotaLevel,
   type StepRequest,
   type StepRequests,
@@ -82,10 +84,45 @@ export async function applyPolicy(
 
   const result: Partial<Record<keyof StepRequests, StepRequest>> = {};
   let quotaRead = false;
+  /** The strict benchmark-evidence decision of `--model-routing research` for one step, applied only to a model the provider lists now. */
+  const strictEvidence = async (step: SelectionStep, provider: 'claude' | 'codex') => {
+    const list = provider === 'codex' ? await codexCatalog() : undefined;
+    const available = provider === 'claude' ? claudeRegistry.map((m) => m.id) : list?.state === 'ok' ? list.models.map((m) => m.id) : [];
+    let routeQuota: QuotaLevel = 'unknown';
+    if (list?.state === 'ok' && list.models.length >= 2) {
+      quotaRead = true;
+      routeQuota = reliableQuota((await readQuotas()).find((q) => q.provider === provider));
+    }
+    const target = ladderLevel(Math.max(0, wantedLevel({ policy, step, size, quota: routeQuota, ...(kind === 'sensitive' ? { sensitive: true } : {}) }).wanted));
+    const decision = recommendFromEvidence({
+      step,
+      provider,
+      difficulty: difficultyOf(size, kind),
+      targetEffort: target,
+      available,
+      now: (deps.now ?? (() => new Date()))(),
+      ...(deps.evidenceCatalog === undefined ? {} : { catalog: deps.evidenceCatalog }),
+    });
+    const evidence = [...(provider === 'codex' && list?.state !== 'ok' ? ['codex model list: not available, so no Codex model can be shown to be accessible'] : []), ...decision.evidence];
+    let note = decision.note;
+    let applied: { model: string; effort: string } | undefined;
+    if (decision.model !== undefined && decision.evidenceEffort !== undefined) {
+      const listed = list?.state === 'ok' ? list.models.find((m) => m.id === decision.model) : undefined;
+      const efforts = listed?.efforts;
+      if (efforts?.status === 'known' && efforts.supported.includes(decision.evidenceEffort)) {
+        applied = { model: decision.model, effort: decision.evidenceEffort };
+        evidence.push(`${decision.model} is listed by the provider now and supports effort ${decision.evidenceEffort}, the effort the evidence was measured at`);
+      } else {
+        note = `provider default kept: ${decision.model} is not reported to support effort ${decision.evidenceEffort} now`;
+        evidence.push(`not applied: ${note}`);
+      }
+    }
+    return { list, available, decision, evidence, note, applied };
+  };
   for (const { step, provider } of selectionSteps(workflow)) {
     let current = requests[step];
     if (current === undefined) continue;
-    if (routing === 'research') {
+    if (routing === 'guided') {
       if (current.modelFromFlag || current.effortFromFlag) {
         current = {
           ...current,
@@ -96,37 +133,52 @@ export async function applyPolicy(
           },
         };
       } else {
-        const list = provider === 'codex' ? await codexCatalog() : undefined;
-        const available = provider === 'claude' ? claudeRegistry.map((m) => m.id) : list?.state === 'ok' ? list.models.map((m) => m.id) : [];
-        let routeQuota: QuotaLevel = 'unknown';
-        if (list?.state === 'ok' && list.models.length >= 2) {
-          quotaRead = true;
-          routeQuota = reliableQuota((await readQuotas()).find((q) => q.provider === provider));
+        const strict = await strictEvidence(step, provider);
+        const header = `benchmark evidence (strict, the same rules as --model-routing research): ${strict.note}`;
+        if (strict.applied !== undefined) {
+          const guide = guideModel({ step, provider, difficulty: difficultyOf(size, kind), size, policy, available: strict.available });
+          const agree = guide.model === undefined ? 'documentation does not point to a model' : guide.model === strict.applied.model ? 'the documented intent agrees' : `the documented intent points to ${guide.model} instead; the measured evidence is used`;
+          result[step] = {
+            ...current,
+            request: { ...current.request, model: strict.applied.model, effort: strict.applied.effort },
+            routing: {
+              note: `${strict.applied.model}: ${strict.note}`,
+              evidence: [header, ...strict.evidence, `intent-based reading (shown separately, vendor documentation): ${agree}`, ...guide.lines],
+              pinned: true,
+              basis: 'benchmark-evidence',
+              uncertainty: 'low',
+            },
+            policy: { name: policy, note: 'the effort equals the effort the published evidence was measured at, not a separate policy choice' },
+          };
+          continue;
         }
-        const target = ladderLevel(Math.max(0, wantedLevel({ policy, step, size, quota: routeQuota, ...(kind === 'sensitive' ? { sensitive: true } : {}) }).wanted));
-        const decision = recommendFromEvidence({
-          step,
-          provider,
-          difficulty: difficultyOf(size, kind),
-          targetEffort: target,
-          available,
-          now: (deps.now ?? (() => new Date()))(),
-          ...(deps.evidenceCatalog === undefined ? {} : { catalog: deps.evidenceCatalog }),
-        });
-        const evidence = [...(provider === 'codex' && list?.state !== 'ok' ? ['codex model list: not available, so no Codex model can be shown to be accessible'] : []), ...decision.evidence];
-        let note = decision.note;
-        let applied: { model: string; effort: string } | undefined;
-        if (decision.model !== undefined && decision.evidenceEffort !== undefined) {
-          const listed = list?.state === 'ok' ? list.models.find((m) => m.id === decision.model) : undefined;
-          const efforts = listed?.efforts;
-          if (efforts?.status === 'known' && efforts.supported.includes(decision.evidenceEffort)) {
-            applied = { model: decision.model, effort: decision.evidenceEffort };
-            evidence.push(`${decision.model} is listed by the provider now and supports effort ${decision.evidenceEffort}, the effort the evidence was measured at`);
-          } else {
-            note = `provider default kept: ${decision.model} is not reported to support effort ${decision.evidenceEffort} now`;
-            evidence.push(`not applied: ${note}`);
-          }
-        }
+        const guide = guideModel({ step, provider, difficulty: difficultyOf(size, kind), size, policy, available: strict.available });
+        const listed = guide.model === undefined || strict.list?.state !== 'ok' ? undefined : strict.list.models.find((m) => m.id === guide.model);
+        const pin = provider === 'codex' && guide.model !== undefined && listed !== undefined ? guide.model : undefined;
+        current = {
+          ...current,
+          request: pin === undefined ? current.request : { ...current.request, model: pin },
+          routing: {
+            note: pin === undefined ? (guide.model !== undefined && provider === 'codex' ? `provider default kept: ${guide.model} is not in the Codex model list now` : guide.note) : guide.note,
+            evidence: [header, ...strict.evidence, ...guide.lines],
+            pinned: pin !== undefined,
+            basis: pin === undefined ? 'default' : 'documented-intent',
+            uncertainty: pin === undefined ? 'high' : guide.uncertainty,
+          },
+        };
+      }
+    } else if (routing === 'research') {
+      if (current.modelFromFlag || current.effortFromFlag) {
+        current = {
+          ...current,
+          routing: {
+            note: current.modelFromFlag ? 'not applied: the model was set manually' : 'not applied: the effort was set manually; the model stays with the provider default',
+            evidence: [],
+            pinned: false,
+          },
+        };
+      } else {
+        const { evidence, note, applied } = await strictEvidence(step, provider);
         const next: StepRequest = {
           ...current,
           request: applied === undefined ? current.request : { ...current.request, model: applied.model, effort: applied.effort },
@@ -228,7 +280,7 @@ export async function applyPolicy(
       size,
       model: pinned ? { kind: 'pinned', id: current.request.model, capability } : { kind: 'auto' },
       quota,
-      ...(kind === 'sensitive' && (routing === 'adaptive' || routing === 'research') ? { sensitive: true } : {}),
+      ...(kind === 'sensitive' && (routing === 'adaptive' || routing === 'research' || routing === 'guided') ? { sensitive: true } : {}),
     });
     result[step] = {
       ...current,

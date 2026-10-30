@@ -520,3 +520,112 @@ describe('orchestrate --model-routing research', () => {
     expect(plain.out).not.toContain('evidence catalog');
   });
 });
+
+describe('orchestrate --model-routing guided', () => {
+  const server = (...ids: string[]) => (): AppServerProcess => {
+    let lineCb: (line: string) => void = () => undefined;
+    return {
+      send: (line) => {
+        const m = JSON.parse(line) as { id?: number; method: string };
+        if (m.id === undefined) return;
+        const eff = ['low', 'medium', 'high'].map((reasoningEffort) => ({ reasoningEffort }));
+        const reply = m.method === 'model/list' ? { result: { data: ids.map((model) => ({ model, supportedReasoningEfforts: eff })), nextCursor: null } } : { result: {} };
+        queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, ...reply })); });
+      },
+      onLine: (cb) => (lineCb = cb),
+      onExit: () => undefined,
+      kill: () => Promise.resolve(),
+    };
+  };
+  const all = server('gpt-6-astra', 'gpt-6.1-sol', 'gpt-6.1-terra', 'gpt-6-luna');
+  const base = (task: string, ...extra: string[]) => ['orchestrate', '--workflow', 'plan-review', '--task', task, '--model-routing', 'guided', ...extra];
+  const HARD = 'fix the auth token handling';
+  const EASY = 'rename a variable';
+  const reviewModel = (out: string) => /\[codex\]: [^\n]*\n\s+model: ([^ ;]+)/.exec(out)?.[1];
+  const catalog: EvidenceCatalog = {
+    version: 'test.1',
+    sources: [{ id: 'ind', url: 'https://example.test/review-bench', publisher: 'Example Lab', kind: 'independent', published: '2026-10-20', retrieved: '2026-10-30' }],
+    entries: ['gpt-6.1-sol:72', 'gpt-6.1-terra:60'].map((x) => ({
+      sourceId: 'ind', group: 'g', provider: 'codex' as const, model: x.split(':')[0] ?? '', variant: 'V', benchmark: 'ReviewBench', benchmarkVersion: '1', fit: 'code-review' as const,
+      metric: 'percent' as const, score: Number(x.split(':')[1]), effort: 'medium', harness: 'example harness', confidence: 'high' as const,
+    })),
+    claims: [],
+  };
+  const NOW = () => new Date('2026-11-02T00:00:00Z');
+
+  it('parses the option', () => {
+    expect(parseOrchestrateArgs(['--workflow', 'plan-review', '--task', 'x', '--dry-run', '--model-routing', 'guided'])).toMatchObject({ modelRouting: 'guided' });
+  });
+
+  it('chooses from documented purposes and the Codex list by policy, shows basis and uncertainty, and keeps benchmark evidence separate', async () => {
+    const quality = await go([...base(HARD, '--policy', 'quality'), '--dry-run'], { appServer: all });
+    expect(quality.out).toContain('model routing: guided');
+    expect(quality.out).toContain('model: gpt-6-astra (verified); reason: guided routing: gpt-6-astra: documented for complex-work');
+    expect(quality.out).toContain('routing basis: documented intent of the model (vendor documentation), not a measurement; uncertainty: medium');
+    expect(quality.out).toContain('evidence: benchmark evidence (strict, the same rules as --model-routing research): provider default kept');
+    expect(quality.out).toContain('evidence: intent-based reading (vendor documentation, not measurements)');
+    expect(quality.out).toContain('https://developers.openai.com/api/docs/guides/latest-model, read 2026-10-31');
+    const economy = await go([...base(HARD, '--policy', 'economy'), '--dry-run'], { appServer: all });
+    expect(economy.out).toContain('model: gpt-6.1-sol (verified)');
+    const balanced = await go([...base(HARD), '--dry-run'], { appServer: all });
+    expect(balanced.out).toContain('model: gpt-6.1-sol (verified)');
+    expect(balanced.out).toContain('verdict: would run');
+  });
+
+  it('uses the documented small model for an easy task, not under quality, and starts the chosen Codex model', async () => {
+    const easy = await go([...base(EASY), '--dry-run'], { appServer: all });
+    expect(easy.out).toContain('model: gpt-6-luna (verified)');
+    const quality = await go([...base(EASY, '--policy', 'quality'), '--dry-run'], { appServer: all });
+    expect(quality.out).toContain('model: gpt-6-astra (verified)');
+    const live = await go([...base(HARD), '--confirm'], { appServer: all });
+    expect(live.specs[1]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-6.1-sol']));
+    expect(live.specs[1]?.args.join(' ')).toContain('model_reasoning_effort=');
+  });
+
+  it('never pins a Claude model, with access marked UNKNOWN', async () => {
+    const dry = await go([...base(HARD), '--dry-run'], { appServer: all });
+    expect(dry.out).toContain('claude access: UNKNOWN');
+    expect(dry.out).toContain('documentation does not settle which of claude-fable-5-1, claude-opus-5-5');
+    expect(dry.out).toContain('routing basis: no sufficient basis, provider default; uncertainty: high');
+    const live = await go([...base(HARD), '--confirm'], { appServer: all });
+    expect(live.specs[0]?.args).not.toContain('--model');
+    for (const spec of live.specs) expect(spec.args.join(' ')).not.toContain('ultracode');
+  });
+
+  it('keeps the provider default when no listed model is documented for the work', async () => {
+    const terra = await go([...base(HARD), '--dry-run'], { appServer: server('gpt-6.1-terra') });
+    expect(terra.out).toContain('guided routing: provider default kept: no available model is documented for complex-work');
+    expect(terra.out).not.toContain('model: gpt-6.1-terra');
+    const unknown = await go([...base(HARD), '--dry-run'], { appServer: server('gpt-9-new') });
+    expect(unknown.out).toContain('gpt-9-new: no documented purpose');
+    expect(unknown.out).not.toContain('model: gpt-9-new');
+  });
+
+  it('prefers strict benchmark evidence when it exists, shows the documented intent next to it, and reports low uncertainty', async () => {
+    const dry = await go([...base(HARD), '--dry-run'], { appServer: all, evidenceCatalog: catalog, now: NOW });
+    expect(dry.out).toContain('model: gpt-6.1-sol (verified); reason: guided routing: gpt-6.1-sol: gpt-6.1-sol: leads comparable published results');
+    expect(dry.out).toContain('routing basis: measured benchmark evidence; uncertainty: low');
+    expect(dry.out).toContain('intent-based reading (shown separately, vendor documentation): the documented intent agrees');
+    const astraLeads: EvidenceCatalog = { ...catalog, entries: catalog.entries.map((e) => (e.model === 'gpt-6.1-sol' ? { ...e, model: 'gpt-6-astra' } : { ...e, model: 'gpt-6.1-sol' })) };
+    const disagree = await go([...base(HARD), '--dry-run'], { appServer: all, evidenceCatalog: astraLeads, now: NOW });
+    expect(disagree.out).toContain('model: gpt-6-astra (verified)');
+    expect(disagree.out).toContain('the documented intent points to gpt-6.1-sol instead; the measured evidence is used');
+    const higher = await go([...base(HARD, '--policy', 'quality'), '--dry-run'], { appServer: all, evidenceCatalog: catalog, now: NOW });
+    expect(higher.out).toContain('results at different efforts are not equivalent');
+    expect(higher.out).not.toContain('routing basis: measured benchmark evidence');
+  });
+
+  it('keeps manual choices and leaves research and the other modes unchanged', async () => {
+    const manual = await go([...base(HARD), '--dry-run', '--step-model', 'review=gpt-6.1-terra'], { appServer: all });
+    expect(manual.out).toContain('reason: requested with --step-model review=gpt-6.1-terra');
+    expect(manual.out).not.toContain('model: gpt-6-astra');
+    const effort = await go([...base(HARD), '--dry-run', '--step-effort', 'review=high'], { appServer: all });
+    expect(effort.out).toContain('not applied: the effort was set manually');
+    const research = await go(['orchestrate', '--workflow', 'plan-review', '--task', HARD, '--model-routing', 'research', '--dry-run'], { appServer: all });
+    expect(research.out).not.toContain('intent-based reading');
+    expect(research.out).not.toContain('routing basis');
+    const plain = await go(['orchestrate', '--workflow', 'plan-review', '--task', HARD, '--dry-run'], { appServer: all });
+    expect(plain.out).not.toContain('intent-based');
+    expect(reviewModel(plain.out)).toBeDefined();
+  });
+});

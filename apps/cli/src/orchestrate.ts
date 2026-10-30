@@ -187,6 +187,9 @@ export function seconds(ms: number): string {
 export function policyLine(policy: PolicyName, quotaNote: string, routing: ModelRouting = 'auto'): string {
   return (
     `  policy: ${policy}; manual --step-model/--step-effort settings win; it only sets an effort it can verify and never picks a model or ultracode; quota ${quotaNote}\n` +
+    (routing === 'guided'
+      ? '  model routing: guided; first the strict benchmark evidence of research, shown on its own; if that is not sufficient, an intent-based choice from the providers\' documented model purposes, the task, the policy and the Codex models listed now, labelled as documentation and not measurement, with its uncertainty; a Claude model is never pinned; otherwise the provider default is kept\n'
+      : '') +
     (routing === 'research'
       ? '  model routing: research; recommends a Codex model only from published, comparable results (same benchmark, version and effort; independent or doubly confirmed; recent), for models the provider lists now; user reports are low-confidence notes, prices are not used, a Claude model is never pinned; otherwise the provider default is kept\n'
       : '') +

@@ -35,7 +35,14 @@ export interface StepRequest {
   /** Set by the policy step: what the policy did for this step and why. */
   readonly policy?: { readonly name: string; readonly note: string };
   /** Set by adaptive routing: what it decided for the model and the evidence behind it. */
-  readonly routing?: { readonly note: string; readonly evidence: readonly string[]; readonly pinned: boolean };
+  readonly routing?: {
+    readonly note: string;
+    readonly evidence: readonly string[];
+    readonly pinned: boolean;
+    /** `guided` only: what the choice rests on, and how sure it is. */
+    readonly basis?: 'benchmark-evidence' | 'documented-intent' | 'default';
+    readonly uncertainty?: 'low' | 'medium' | 'high';
+  };
 }
 
 export type StepRequests = Readonly<Partial<Record<SelectionStep, StepRequest>>>;

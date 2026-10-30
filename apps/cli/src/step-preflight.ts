@@ -72,9 +72,9 @@ function pinReason(
   fromFlag: boolean,
   value: string,
   policy?: { name: string; note: string },
-  routing?: { note: string },
+  routing?: { note: string; basis?: string },
 ): string {
-  if (!fromFlag && routing !== undefined) return `adaptive routing: ${routing.note}`;
+  if (!fromFlag && routing !== undefined) return `${routing.basis === undefined ? 'adaptive' : 'guided'} routing: ${routing.note}`;
   if (!fromFlag && policy !== undefined) return `policy ${policy.name}: ${policy.note}`;
   if (!fromFlag) return 'no flag: the provider default is kept (which model or level that is, is decided by the provider and not known here)';
   return value === 'auto'
@@ -96,6 +96,9 @@ export function selectionLines(sp: StepPreflight): string {
         : 'verified';
   return (
     `      model: ${describePinned(selection.model)}; reason: ${pinReason('--step-model', sp.step, modelFromFlag, request.model, undefined, sp.requested.routing)}\n` +
+    (sp.requested.routing?.basis === undefined
+      ? ''
+      : `      routing basis: ${sp.requested.routing.basis === 'benchmark-evidence' ? 'measured benchmark evidence' : sp.requested.routing.basis === 'documented-intent' ? 'documented intent of the model (vendor documentation), not a measurement' : 'no sufficient basis, provider default'}; uncertainty: ${sp.requested.routing.uncertainty ?? 'high'}\n`) +
     (sp.requested.routing === undefined ? '' : sp.requested.routing.evidence.map((e) => `      evidence: ${e}\n`).join('')) +
     `      effort: ${describePinned(selection.effort)}; reason: ${pinReason('--step-effort', sp.step, effortFromFlag, request.effort, sp.requested.policy)}\n` +
     `      verification: ${status}\n` +

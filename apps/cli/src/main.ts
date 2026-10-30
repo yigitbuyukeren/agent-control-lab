@@ -15,20 +15,8 @@ import {
   asEffortLevel,
   availabilityFromAuth,
   checkEffort,
-  checkGitRepo,
-  claudeCodeAdapter,
-  missingClaudeFlags,
-  scanClaudeSettingsFor,
-  redirectingEnvNames,
   MANAGED_POLICY_LIMIT,
-  claudeRunEnv,
-  codexAdapter,
-  createExec,
-  detectProvider,
-  planClaudeRun,
   runClaude,
-  detectAuth,
-  planCodexRun,
   runCodex,
   validateWorkingDir,
   claudeRegistry,
@@ -41,33 +29,28 @@ import {
   readCodexQuota,
   resolveCacheDir,
   writeClaudeCache,
-  type AppServerSpawn,
   type AuthStatus,
   type ClaudeQuotaStatus,
   type CodexModelsResult,
   type EffortCheck,
   type ModelCapability,
   type Selection,
-  type SelectionIssue,
   type SelectionRequest,
-  type Pinned,
   type ProcessRunner,
-  type RefusalReason,
   type CodexRunOutcome,
-  type ClaudeRefusalReason,
-  type SettingsScan,
-  type GitState,
   type ProviderPreference,
   type ProviderQuota,
   type RouteDecision,
   type TaskKind,
   type UsageWindow,
-  type Exec,
   type ProviderStatus,
   type QuotaStatus,
   type QuotaWindow,
 } from '@agent-control-lab/core';
 import { VERSION } from '@agent-control-lab/shared';
+import { REFUSALS, CLAUDE_REFUSALS, describeIssue, describePinned } from './format.ts';
+import { parseOrchestrateArgs, runOrchestrateCommand } from './orchestrate.ts';
+import { claudePreflight, codexPreflight, type PreflightDeps } from './preflight.ts';
 
 const HELP = `agent-control-lab ${VERSION}
 
@@ -86,6 +69,8 @@ Commands:
                         Run Codex read-only inside a Git repository (subscription login only, no API-key fallback)
   run --provider claude --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode] [--cwd <dir>] [--timeout <seconds>]
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
+  orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>]
+                        Claude drafts a plan, Codex reviews it read-only; stops at the first failure (no retry, no fallback)
   run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
@@ -102,19 +87,17 @@ export interface Io {
   readonly error: (text: string) => void;
 }
 
-export interface Deps {
-  readonly exec?: Exec;
-  readonly appServer?: AppServerSpawn;
+export interface Deps extends PreflightDeps {
   readonly readStdin?: () => Promise<string>;
   readonly cacheDir?: string;
   readonly runner?: ProcessRunner;
-  readonly git?: (cwd: string) => Promise<GitState>;
-  readonly claudeSettings?: (cwd: string) => Promise<SettingsScan>;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
-  /** Caller environment for the Claude run; defaults to `process.env`. */
-  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => Date;
+  /** Step duration clock for `orchestrate` (milliseconds); defaults to `performance.now()`. */
+  readonly clock?: () => number;
+  /** Delimiter token for `orchestrate` step data; defaults to a random UUID. */
+  readonly nonce?: () => string;
 }
 
 function formatProvider(s: ProviderStatus): string {
@@ -283,34 +266,6 @@ function parseRouteArgs(args: readonly string[]): RouteArgs | string {
   return { task, preference, request: { model, effort, mode } };
 }
 
-function describePinned(pinned: Pinned): string {
-  if (pinned.kind === 'provider-default') return 'provider-default';
-  return `${pinned.value} (${pinned.verified ? 'verified' : 'unverified'})`;
-}
-
-function describeIssue(issue: SelectionIssue): string {
-  const flag = issue.blocking ? 'blocking' : 'unverified';
-  switch (issue.code) {
-    case 'model-not-listed':
-      return `model-not-listed [${flag}] ${issue.model}`;
-    case 'model-discovery-failed':
-      return `model-discovery-failed [${flag}] ${issue.model} (${issue.reason}${issue.error === undefined ? '' : `: ${issue.error}`})`;
-    case 'model-access-unverified':
-      return `model-access-unverified [${flag}] ${issue.model} (${issue.documented ? 'documented' : 'not documented'})`;
-    case 'effort-invalid':
-      return `effort-invalid [${flag}] ${issue.effort}`;
-    case 'effort-unsupported':
-      return `effort-unsupported [${flag}] ${issue.effort} (supported: ${issue.supported.join(', ')})`;
-    case 'effort-unverified':
-      return `effort-unverified [${flag}] ${issue.effort} (${issue.reason})`;
-    case 'mode-unsupported':
-      return `mode-unsupported [${flag}] ${issue.mode}`;
-    case 'mode-effort-conflict':
-      return `mode-effort-conflict [${flag}] ${issue.mode} cannot be combined with --effort ${issue.effort}`;
-    case 'mode-unverified':
-      return `mode-unverified [${flag}] ${issue.mode}`;
-  }
-}
 
 function formatSelection(selection: Selection): string {
   return (
@@ -432,39 +387,6 @@ function parseRunArgs(args: readonly string[]): RunArgs | string {
   return { provider, task, request: { model, effort, mode }, cwd, timeoutMs, dryRun, acceptUnverified };
 }
 
-const REFUSALS: Record<RefusalReason, string> = {
-  'not-a-git-repo':
-    'the working directory is not inside a Git repository, which Codex needs. Run `git init` yourself or choose another --cwd (nothing is initialised automatically)',
-  'git-not-installed': 'git is not installed, so the repository check could not run',
-  'git-check-failed': 'the Git repository check failed or timed out',
-  'unverified-selection': 'the model/effort selection could not be verified; add --accept-unverified to run anyway',
-  'task-invalid': 'the task text is empty, too long or invalid',
-  'codex-not-installed': 'codex is not installed',
-  'not-logged-in': 'codex is not logged in',
-  'login-state-unknown': 'codex login state could not be determined',
-  'api-key-login': 'codex is logged in with an API key; only a subscription login is allowed',
-  'login-method-unknown': 'codex login method is not a verified subscription login',
-  'selection-blocked': 'the model/effort selection is blocked',
-};
-
-const CLAUDE_REFUSALS: Record<ClaudeRefusalReason, string> = {
-  'task-invalid': 'the task text is empty, too long or invalid',
-  'claude-not-installed': 'claude is not installed',
-  'not-logged-in': 'claude is not logged in',
-  'login-state-unknown': 'claude login state could not be determined',
-  'api-key-login': 'claude is using an API key; only a Pro/Max subscription login is allowed',
-  'third-party-provider': 'claude is using a third-party provider; only a Pro/Max subscription login is allowed',
-  'not-a-subscription-plan': 'claude is not signed in with a verified Pro/Max subscription',
-  'claude-version-unsupported': 'this Claude Code version is older than the verified minimum for ultracode',
-  'claude-version-unknown': 'the Claude Code version could not be read or parsed, which ultracode requires',
-  'claude-flags-unverified': 'the Claude CLI did not list every safety flag the run needs (see claude --help); refusing to guess',
-  'settings-unsafe': 'a Claude settings file sets credentials, a provider, a proxy or a login helper',
-  'settings-unverifiable': 'a Claude settings file exists but could not be read or parsed, or the repository layout could not be established, so settings could not be verified',
-  'network-env-not-forwarded':
-    'proxy/TLS/base-URL variables are set in this shell but are not forwarded to Claude, which connects directly; add --accept-unverified to run without them',
-  'selection-blocked': 'the model/effort/mode selection is blocked',
-  'unverified-selection': 'the model/effort/mode selection could not be verified; add --accept-unverified to run anyway',
-};
 
 const RUN_FAILURES: Record<Exclude<CodexRunOutcome['kind'], 'completed'>, string> = {
   failed: 'codex run failed',
@@ -480,32 +402,10 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
     io.error('run refused: the working directory does not exist\n');
     return 1;
   }
-  // Probe with the same cleaned environment the run will use, so an API key in the caller's
-  // environment cannot make the check pass or fail differently from the real run.
-  const exec = deps.exec ?? createExec({ env: claudeRunEnv(deps.env ?? process.env) });
-  const [auth, provider, help, settings] = await Promise.all([
-    detectAuth(claudeCodeAdapter, exec),
-    detectProvider(claudeCodeAdapter, exec),
-    exec('claude', ['--help'], { timeoutMs: 5000 }),
-    (deps.claudeSettings ?? ((dir: string) => scanClaudeSettingsFor(dir)))(cwd),
-  ]);
-  const selection = resolveSelection('claude', args.request, { claude: claudeRegistry, codex: { state: 'ok', models: [] } });
-  const extraFlags = [
-    ...(args.request.model === 'auto' ? [] : ['--model']),
-    ...(args.request.effort === 'auto' && args.request.mode === 'normal' ? [] : ['--effort']),
-  ];
-  const missingFlags = help.kind === 'ok' ? missingClaudeFlags(help.stdout, extraFlags) : undefined;
-  const networkRedirects = redirectingEnvNames(deps.env ?? process.env);
-  const plan = planClaudeRun({
-    task: args.task,
-    auth,
-    selection,
-    version: provider.version,
-    missingFlags,
-    settings,
-    networkRedirects,
-    acceptUnverified: args.acceptUnverified,
-  });
+  const { plan, auth, provider, selection, settings, missingFlags, networkRedirects } = await claudePreflight(
+    { task: args.task, request: args.request, acceptUnverified: args.acceptUnverified, cwd },
+    deps,
+  );
   const findingLines = (plan.ok ? [] : plan.findings).map((f) => `  finding: ${f.kind} settings ${f.key}\n`);
   const settingsLine =
     settings.status !== 'unverifiable'
@@ -701,14 +601,10 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         return 1;
       }
       // All preflight checks are read-only: git rev-parse, codex login status, model/list.
-      const git = await (deps.git ?? ((dir: string) => checkGitRepo(dir)))(cwd);
-      const auth = await detectAuth(codexAdapter, deps.exec ?? defaultExec);
-      const pinned = args.request.model !== 'auto' || args.request.effort !== 'auto';
-      const codex: CodexModelsResult = pinned
-        ? await discoverCodexModels(deps.appServer)
-        : { state: 'ok', models: [] };
-      const selection = resolveSelection('codex', args.request, { claude: claudeRegistry, codex });
-      const plan = planCodexRun({ task: args.task, auth, selection, git, acceptUnverified: args.acceptUnverified });
+      const { plan, auth, git, selection } = await codexPreflight(
+        { task: args.task, request: args.request, acceptUnverified: args.acceptUnverified, cwd },
+        deps,
+      );
       if (args.dryRun) {
         const login = auth.state === 'logged-in' ? `${auth.method ?? 'unknown'} login` : auth.state;
         const required = ['--confirm', ...(selection.issues.length > 0 && !selection.blocked ? ['--accept-unverified'] : [])];
@@ -743,6 +639,14 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       io.out(outcome.output.endsWith('\n') ? outcome.output : `${outcome.output}\n`);
       if (outcome.truncated) io.error('output was truncated\n');
       return 0;
+    }
+    case 'orchestrate': {
+      const args = parseOrchestrateArgs(argv.slice(1));
+      if (typeof args === 'string') {
+        io.error(`${args}\n`);
+        return 2;
+      }
+      return runOrchestrateCommand(args, io, deps);
     }
     case 'info':
       io.out(

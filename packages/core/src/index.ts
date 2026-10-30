@@ -11,7 +11,7 @@ export function getInfo(env: { node: string; platform: string }): LabInfo {
   return { name: 'agent-control-lab', version: VERSION, ...env };
 }
 
-export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'run'> {
+export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'run' | 'orchestrate'> {
   const [first] = argv;
   if (first === undefined || first === 'help' || first === '--help' || first === '-h') {
     return ok('help');
@@ -25,6 +25,7 @@ export function parseCommand(argv: readonly string[]): Result<'help' | 'version'
   if (first === 'route') return ok('route');
   if (first === 'models') return ok('models');
   if (first === 'run') return ok('run');
+  if (first === 'orchestrate') return ok('orchestrate');
   return err(`unknown command: ${first}`);
 }
 
@@ -44,3 +45,5 @@ export * from './git-preflight.ts';
 export * from './claude-run.ts';
 export * from './claude-settings.ts';
 export * from './repo-roots.ts';
+export * from './orchestration.ts';
+export * from './workflows.ts';

@@ -2,7 +2,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { AppServerProcess, Exec, OutcomeStore, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
+import type { AppServerProcess, EvidenceCatalog, Exec, OutcomeStore, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
 import { run } from './main.ts';
 import { parseOrchestrateArgs } from './orchestrate.ts';
 
@@ -55,6 +55,8 @@ async function go(
     onSpawn?: (spec: ProcessSpec) => void;
     appServer?: () => AppServerProcess;
     store?: OutcomeStore;
+    evidenceCatalog?: EvidenceCatalog;
+    now?: () => Date;
   } = {},
 ) {
   const specs: ProcessSpec[] = [];
@@ -70,6 +72,8 @@ async function go(
         exec: over.exec ?? exec(),
         appServer: over.appServer ?? modelServer,
         ...(over.store === undefined ? {} : { outcomes: over.store }),
+        ...(over.evidenceCatalog === undefined ? {} : { evidenceCatalog: over.evidenceCatalog }),
+        ...(over.now === undefined ? {} : { now: over.now }),
         cwd: dir,
         env: over.env ?? { PATH: '/bin' },
         git: () => Promise.resolve(over.git ?? 'repo'),
@@ -448,47 +452,66 @@ describe('orchestrate --model-routing research', () => {
   };
   const both = server('gpt-6.1-sol', 'gpt-6.1-terra');
   const hard = ['orchestrate', '--workflow', 'plan-review', '--task', 'fix the auth token handling', '--model-routing', 'research'];
+  // A catalog with a code-review comparison measured at medium, the effort a small sensitive task runs at under `balanced`.
+  const catalog: EvidenceCatalog = {
+    version: 'test.1',
+    sources: [{ id: 'ind', url: 'https://example.test/review-bench', publisher: 'Example Lab', kind: 'independent', published: '2026-10-20', retrieved: '2026-10-30' }],
+    entries: ['gpt-6.1-sol:72', 'gpt-6.1-terra:60'].map((x) => ({
+      sourceId: 'ind', group: 'g', provider: 'codex' as const, model: x.split(':')[0] ?? '', variant: 'V', benchmark: 'ReviewBench', benchmarkVersion: '1', fit: 'code-review' as const,
+      metric: 'percent' as const, score: Number(x.split(':')[1]), effort: 'medium', harness: 'example harness', confidence: 'high' as const,
+    })),
+    claims: [],
+  };
+  const NOW = () => new Date('2026-11-02T00:00:00Z');
 
   it('parses the option', () => {
     expect(parseOrchestrateArgs(['--workflow', 'plan-review', '--task', 'x', '--dry-run', '--model-routing', 'research'])).toMatchObject({ modelRouting: 'research' });
   });
 
-  it('pins the Codex model the published comparison favours and shows sources, dates, versions and confidence', async () => {
+  it('keeps the provider default with the shipped catalog, because nothing task-fit and equivalent exists, and says why', async () => {
     const dry = await go([...hard, '--dry-run'], { appServer: both });
     expect(dry.out).toContain('model routing: research');
-    expect(dry.out).toContain('model: gpt-6.1-sol (verified); reason: adaptive routing: gpt-6.1-sol: leads comparable published results');
-    expect(dry.out).toContain('evidence: gpt-6.1-sol 55 points: Artificial Analysis Intelligence Index v5.0, effort max, independent (confidence high)');
-    expect(dry.out).toContain('source https://artificialanalysis.ai/models/gpt-6-1-sol (published 2026-09-29, read 2026-10-30)');
-    expect(dry.out).toContain('evidence catalog 2026-10-30.1');
-    expect(dry.out).toContain('prices are not used');
+    expect(dry.out).toContain('adaptive routing: provider default kept: no comparable evidence of the right kind');
+    expect(dry.out).toContain('context only, not evidence for review work: Artificial Analysis Intelligence Index v5.0 (general-intelligence): gpt-6.1-sol 55 points, gpt-6.1-terra 51 points');
+    expect(dry.out).toContain('re-reading a page does not refresh a benchmark');
     expect(dry.out).toContain('verdict: would run');
     const live = await go([...hard, '--confirm'], { appServer: both });
-    expect(live.specs[1]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-6.1-sol']));
+    for (const spec of live.specs) {
+      expect(spec.args).not.toContain('--model');
+      expect(spec.args).not.toContain('-m');
+    }
   });
 
-  it('never pins a Claude model: the plan step only gets advice, with access marked UNKNOWN', async () => {
-    const dry = await go([...hard, '--dry-run'], { appServer: both });
-    expect(dry.out).toContain('the evidence favours claude-opus-5-5, but a Claude model cannot be shown to be accessible');
-    expect(dry.out).toContain('claude access: UNKNOWN');
-    const live = await go([...hard, '--confirm'], { appServer: both });
+  it('shows the OpenAI pages\' stated results for a coding step and why they are not used', async () => {
+    const write = await go(['orchestrate', '--workflow', 'plan-review', '--task', 'fix the auth token handling', '--model-routing', 'research', '--dry-run'], { appServer: both });
+    expect(write.out).not.toContain('model: gpt-6.1');
+  });
+
+  it('pins a Codex model, with the evidence effort, when an injected catalog gives task-fit evidence at the effort the step runs at', async () => {
+    const dry = await go([...hard, '--dry-run'], { appServer: both, evidenceCatalog: catalog, now: NOW });
+    expect(dry.out).toContain('model: gpt-6.1-sol (verified); reason: adaptive routing: gpt-6.1-sol: leads comparable published results');
+    expect(dry.out).toContain('effort: medium (verified); reason: policy balanced: the effort equals the effort the published evidence was measured at');
+    expect(dry.out).toContain('source https://example.test/review-bench (evaluation date not stated by the source, published 2026-10-20, page read 2026-10-30');
+    expect(dry.out).toContain('evidence catalog test.1');
+    const live = await go([...hard, '--confirm'], { appServer: both, evidenceCatalog: catalog, now: NOW });
+    expect(live.specs[1]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort=medium']));
+  });
+
+  it('does not pin when the provider no longer lists the model or the effort, nor a Claude model', async () => {
+    const unlisted = await go([...hard, '--dry-run'], { appServer: server('gpt-6.1-sol'), evidenceCatalog: catalog, now: NOW });
+    expect(unlisted.out).not.toContain('model: gpt-6.1-sol');
+    const live = await go([...hard, '--confirm'], { appServer: both, evidenceCatalog: catalog, now: NOW });
     expect(live.specs[0]?.args).not.toContain('--model');
   });
 
-  it('keeps the provider default when the model is not listed, for easy tasks, and for unlisted-only evidence', async () => {
-    const one = await go([...hard, '--dry-run'], { appServer: server('gpt-6.1-sol') });
-    expect(one.out).not.toContain('model: gpt-6.1-sol');
-    const none = await go([...hard, '--dry-run'], { appServer: server('gpt-other') });
-    expect(none.out).toContain('provider default kept: no comparable, sufficient evidence');
-    const easy = await go([...hard.slice(0, 4), 'rename a variable', ...hard.slice(5), '--dry-run'], { appServer: both });
+  it('keeps the default for easy tasks, and manual choices win', async () => {
+    const easy = await go([...hard.slice(0, 4), 'rename a variable', ...hard.slice(5), '--dry-run'], { appServer: both, evidenceCatalog: catalog, now: NOW });
     expect(easy.out).toContain('an easy task does not call for a model chosen by benchmark leads');
-    expect(easy.out).not.toContain('model: gpt-6.1-sol');
-  });
-
-  it('keeps manual choices and never selects ultracode', async () => {
-    const manual = await go([...hard, '--dry-run', '--step-model', 'review=gpt-6.1-terra'], { appServer: both });
+    const manual = await go([...hard, '--dry-run', '--step-model', 'review=gpt-6.1-terra'], { appServer: both, evidenceCatalog: catalog, now: NOW });
     expect(manual.out).toContain('reason: requested with --step-model review=gpt-6.1-terra');
-    expect(manual.out).not.toContain('model: gpt-6.1-sol');
-    const live = await go([...hard, '--confirm'], { appServer: both });
+    const effort = await go([...hard, '--dry-run', '--step-effort', 'review=high'], { appServer: both, evidenceCatalog: catalog, now: NOW });
+    expect(effort.out).toContain('not applied: the effort was set manually');
+    const live = await go([...hard, '--confirm'], { appServer: both, evidenceCatalog: catalog, now: NOW });
     for (const spec of live.specs) expect(spec.args.join(' ')).not.toContain('ultracode');
   });
 

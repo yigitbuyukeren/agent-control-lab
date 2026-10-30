@@ -249,31 +249,46 @@ directory (`ACL_CACHE_DIR` overrides it), owner-only where the platform allows i
 ## Research routing: `--model-routing research`
 
 Recommends a model from **published benchmark results** kept in a versioned catalog
-(`packages/core/src/evidence-catalog.ts`, version `2026-10-30.1`). Each entry records the source URL, the date the source
-published it and the date it was read, benchmark and version, the model id and the variant exactly as the source labels it,
-the effort the score was measured at, and a confidence level. It makes no model call and runs no benchmark.
+(`packages/core/src/evidence-catalog.ts`, version `2026-10-30.2`). Each entry records the source URL, the dates the source
+states (evaluation, publication, model release), the date this catalog read the page, benchmark and version, the model
+id and variant as the source labels it, the effort and harness the result was measured with, and a confidence level.
+It makes no model call and runs no benchmark.
 
 - **Sources and confidence:** `independent` (Artificial Analysis, one method for all models): high. `official-vendor`
-  (a vendor's own launch page): medium. `community` (a forum user's report): low, shown as a supporting note and never
-  used to decide anything.
-- **What is compared:** only scores from the same group with the same benchmark, benchmark version, unit **and** effort
-  setting. Different benchmarks, versions, units or efforts are never compared; an effort a source does not state
-  (`unspecified`) is not usable. Coding steps (`implement`) need an agentic-coding benchmark, planning and review need a
-  reasoning benchmark.
-- **Difficulty:** from the task text (size class and the risky-keyword check, both heuristics). Easy tasks keep the default. The
-  evidence must be measured at an effort at least as high as the step aims for.
+  (a vendor's own launch page: Anthropic, OpenAI): medium. `community` (a forum user's report): low, shown as a
+  supporting note and never used to decide anything.
+- **Only what a source states:** OpenAI's two launch pages could be read in the in-app browser (the page served its
+  tr-TR locale). Only figures written in the page text are recorded; chart values are images and were not read, and
+  anything that could not be read is not added. Differences a page states without each model's own score (for example
+  "GPT-6.1 Sol is 6.4 points ahead of GPT-6 Sol") are kept as stated differences, not as scores.
+- **What is compared:** only results with the same benchmark, benchmark version, unit, **harness** and **effort**; a
+  vendor's own environment is not the same harness as another evaluator's, and competitor figures on a vendor page come from
+  public reports. An effort or harness a source does not name (`unspecified`, or "highest" without a level) is never
+  compared.
+- **Effort must be the same as the run's:** a `max` result is not taken as superiority for a `medium` or `high` run. A
+  model is recommended only if the evidence was measured at exactly the effort the step will run at (from `--policy`,
+  task size, risk keywords and a reliable quota reading); when it is pinned, that effort is applied, and the model must
+  list it as supported now.
+- **Task fit:** a benchmark counts only for the work it measures: `agentic-coding` for `implement`, `code-review` for
+  `review`, `planning` for `plan`. The Artificial Analysis Intelligence Index is a **general** index: it is shown as context
+  and is not evidence about coding, code review or planning. Computer-use, business-workflow and science-agent results are
+  context too.
+- **Dates:** freshness is counted from the evaluation date, else the publication date, else the model release date as the
+  source states it (at most 120 days old). The day this catalog read a page is never used: **reading a page again does
+  not refresh a benchmark**. A result with none of these dates is not used for a decision, and the dry run says
+  "evaluation date not stated by the source" where that is the case (today: all Artificial Analysis and OpenAI entries).
 - **Sufficient evidence:** at least two models this step can use now, a lead of at least 3 index points or 5 percentage
-  points, evidence not older than 120 days, and either an independently produced comparison or two agreeing
-  comparisons. Conflicting comparisons, a tie or a single vendor table keep the provider default.
-- **Access:** a Codex model is chosen only if the provider lists it now. A Claude model is never pinned (nothing proves the
-  account can use it): the dry run shows what the evidence favours as advice and `claude access: UNKNOWN`.
+  points, and either an independently produced comparison or two agreeing ones. Conflicts, ties and a single vendor table
+  keep the provider default.
+- **Access:** a Codex model is chosen only if the provider lists it now. A Claude model is never pinned: the dry run shows
+  what the evidence favours as advice and `claude access: UNKNOWN`.
 - **Prices:** deliberately not recorded or used. An API price per token says nothing about your subscription quota.
-- **Manual wins:** `--step-model` / `--step-effort` are never overridden; the chosen model then gets the effort from
-  `--policy`. Ultracode is never selected.
-- **Dry run:** prints, per step, the decision, every comparison with its scores, benchmark, effort, confidence, source URL and
-  dates, what was ignored and why, and any low-confidence notes.
-- **Limits of the shipped data:** it is small and was read through a text-extraction tool on 2026-10-30; OpenAI's own
-  launch pages could not be fetched (HTTP 403), so no OpenAI-published figure is included. Today the one usable comparison
-  is the Artificial Analysis Intelligence Index v5.0 at max effort (a general reasoning index, not a coding benchmark), so
-  coding steps have no comparable Codex evidence and keep the default. Re-check a figure at its URL before relying on it;
-  to update, add entries from a page you opened, with its URL and date, and bump the catalog version.
+- **Manual wins:** `--step-model` / `--step-effort` are never overridden. Ultracode is never selected. The other routing
+  modes are unchanged.
+- **Dry run:** prints the decision, each comparison with scores, benchmark, effort, harness, confidence, source URL and
+  dates, the results that were ignored and why, context-only results, and low-confidence notes.
+- **Today's outcome:** with the shipped data no step gets a recommendation. The only absolute OpenAI figure for a coding
+  benchmark (GPT-6.1 Terra, Terminal-Bench 4.0, 50.3% at an unnamed "highest" effort) has no comparable GPT-6.1 Sol figure;
+  OpenAI's DeepSWE difference compares unnamed efforts; its AutomationBench and OSWorld differences are not coding. The
+  provider default is kept, and the evidence shown explains why. To update, add entries from a page you opened, with its
+  URL and date, state only what it states, and bump the catalog version.

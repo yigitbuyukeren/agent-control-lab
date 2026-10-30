@@ -15,6 +15,7 @@ import {
   resolveCacheDir,
   selectionSteps,
   type CodexModelsResult,
+  type EvidenceCatalog,
   type ModelCapability,
   type ModelRouting,
   type OutcomeRecord,
@@ -34,6 +35,8 @@ export interface PolicyDeps extends PreflightDeps {
   readonly now?: () => Date;
   /** Local outcome records for `--model-routing measured`; absent means there is no data. */
   readonly outcomes?: OutcomeStore;
+  /** Evidence catalog for `--model-routing research`; tests inject one, otherwise the shipped catalog is used. */
+  readonly evidenceCatalog?: EvidenceCatalog;
 }
 
 export interface PolicyResult {
@@ -95,14 +98,45 @@ export async function applyPolicy(
       } else {
         const list = provider === 'codex' ? await codexCatalog() : undefined;
         const available = provider === 'claude' ? claudeRegistry.map((m) => m.id) : list?.state === 'ok' ? list.models.map((m) => m.id) : [];
-        const target = ladderLevel(Math.max(0, wantedLevel({ policy, step, size, quota: 'unknown', ...(kind === 'sensitive' ? { sensitive: true } : {}) }).wanted));
-        const decision = recommendFromEvidence({ step, provider, difficulty: difficultyOf(size, kind), targetEffort: target, available, now: (deps.now ?? (() => new Date()))() });
-        const extra = provider === 'codex' && list?.state !== 'ok' ? ['codex model list: not available, so no Codex model can be shown to be accessible'] : [];
-        current = {
+        let routeQuota: QuotaLevel = 'unknown';
+        if (list?.state === 'ok' && list.models.length >= 2) {
+          quotaRead = true;
+          routeQuota = reliableQuota((await readQuotas()).find((q) => q.provider === provider));
+        }
+        const target = ladderLevel(Math.max(0, wantedLevel({ policy, step, size, quota: routeQuota, ...(kind === 'sensitive' ? { sensitive: true } : {}) }).wanted));
+        const decision = recommendFromEvidence({
+          step,
+          provider,
+          difficulty: difficultyOf(size, kind),
+          targetEffort: target,
+          available,
+          now: (deps.now ?? (() => new Date()))(),
+          ...(deps.evidenceCatalog === undefined ? {} : { catalog: deps.evidenceCatalog }),
+        });
+        const evidence = [...(provider === 'codex' && list?.state !== 'ok' ? ['codex model list: not available, so no Codex model can be shown to be accessible'] : []), ...decision.evidence];
+        let note = decision.note;
+        let applied: { model: string; effort: string } | undefined;
+        if (decision.model !== undefined && decision.evidenceEffort !== undefined) {
+          const listed = list?.state === 'ok' ? list.models.find((m) => m.id === decision.model) : undefined;
+          const efforts = listed?.efforts;
+          if (efforts?.status === 'known' && efforts.supported.includes(decision.evidenceEffort)) {
+            applied = { model: decision.model, effort: decision.evidenceEffort };
+            evidence.push(`${decision.model} is listed by the provider now and supports effort ${decision.evidenceEffort}, the effort the evidence was measured at`);
+          } else {
+            note = `provider default kept: ${decision.model} is not reported to support effort ${decision.evidenceEffort} now`;
+            evidence.push(`not applied: ${note}`);
+          }
+        }
+        const next: StepRequest = {
           ...current,
-          request: decision.model === undefined ? current.request : { ...current.request, model: decision.model },
-          routing: { note: decision.note, evidence: [...extra, ...decision.evidence], pinned: decision.model !== undefined },
+          request: applied === undefined ? current.request : { ...current.request, model: applied.model, effort: applied.effort },
+          routing: { note, evidence, pinned: applied !== undefined },
         };
+        if (applied !== undefined) {
+          result[step] = { ...next, policy: { name: policy, note: 'the effort equals the effort the published evidence was measured at, not a separate policy choice' } };
+          continue;
+        }
+        current = next;
       }
     } else if (routing === 'measured') {
       if (current.modelFromFlag || current.effortFromFlag) {

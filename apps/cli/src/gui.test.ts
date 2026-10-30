@@ -70,8 +70,10 @@ describe('gui server', () => {
     expect(res.headers.get('content-security-policy')).toContain("default-src 'none'");
     expect(res.headers.get('cache-control')).toBe('no-store');
     expect(html).toContain(TOKEN);
-    expect(html).not.toMatch(/localStorage|sessionStorage|indexedDB|https?:\/\/(?!127)/);
-    for (const name of ['auto', 'adaptive', 'measured', 'research', 'guided', 'economy', 'balanced', 'quality']) expect(html).toContain(`>${name}<`);
+    expect(html).not.toMatch(/localStorage|sessionStorage|indexedDB|@import|<link|\ssrc=|url\(\s*['"]?https?:/);
+    expect(html).toContain('[hidden]{display:none!important}');
+    expect(html).toContain('lang="tr"');
+    for (const id of ['auto', 'adaptive', 'measured', 'research', 'guided', 'economy', 'balanced', 'quality']) expect(html).toContain(`id:'${id}'`);
   });
   it('runs the CLI in dry-run mode and returns its output', async () => {
     const calls: string[][] = [];
@@ -97,6 +99,35 @@ describe('gui server', () => {
     expect((await fetch(`${base}/nothing`)).status).toBe(404);
     expect((await fetch(`${base}/api/dry-run`)).status).toBe(404);
     expect(calls).toEqual([]);
+  });
+  it('serves parsed status only with the token and runs just read-only commands', async () => {
+    const calls: string[][] = [];
+    const server = createGuiServer({
+      token: TOKEN,
+      run: (argv, io) => {
+        calls.push([...argv]);
+        io.out(argv[0] === 'providers' ? 'Claude Code  installed 2.1.0\nCodex        installed 0.1.0\n' : argv[0] === 'quota' ? 'Codex plan: plus\n  5h window (primary): 3% used, resets 2026-10-31T03:55:21.000Z\n' : argv[0] === 'auth-status' ? 'Claude Code  logged in (subscription, pro)\n' : 'Codex (discovered via app-server model/list)\n  gpt-x (GPT X): efforts low, high, default low; ultracode mode unsupported\n');
+        return Promise.resolve(0);
+      },
+    });
+    open.push(server);
+    const base = `http://127.0.0.1:${String(await listenGui(server, 0))}`;
+    expect((await fetch(`${base}/api/status`)).status).toBe(403);
+    expect(calls).toEqual([]);
+    const res = await fetch(`${base}/api/status`, { headers: { 'x-acl-token': TOKEN } });
+    const body = (await res.json()) as { providers: { id: string; login?: string }[]; quota: { windows: { usedPercent: number }[] }[]; models: { models: { id: string }[] }[] };
+    expect(calls.map((c) => c[0])).toEqual(['providers', 'auth-status', 'quota', 'models']);
+    expect(body.providers.map((p) => p.id)).toEqual(['claude', 'codex']);
+    expect(body.providers[0]?.login).toContain('logged in');
+    expect(body.quota[0]?.windows[0]?.usedPercent).toBe(3);
+    expect(body.models[0]?.models[0]?.id).toBe('gpt-x');
+  });
+  it('only adds --accept-unverified when asked', () => {
+    const on = buildDryRunArgv({ ...good, acceptUnverified: true });
+    const off = buildDryRunArgv(good);
+    if ('error' in on || 'error' in off) throw new Error('unexpected');
+    expect(on.argv).toContain('--accept-unverified');
+    expect(off.argv).not.toContain('--accept-unverified');
   });
   it('listens on loopback only', async () => {
     const { port } = await start();

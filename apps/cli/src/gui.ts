@@ -2,6 +2,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { isModelRouting, isPolicyName, isWorkflowName, type WorkflowName } from '@agent-control-lab/core';
 import { guiPage } from './gui-page.ts';
+import { mergeLogin, parseDryRun, parseModels, parseProviderLines, parseQuota } from './gui-model.ts';
 import type { Io } from './main.ts';
 
 export const GUI_DEFAULT_PORT = 4173;
@@ -37,7 +38,8 @@ export function buildDryRunArgv(input: unknown): Built {
   if (typeof task !== 'string' || task.trim() === '' || task.length > MAX_TASK_CHARS) return { error: `task must be 1..${String(MAX_TASK_CHARS)} characters` };
   if (typeof routing !== 'string' || !isModelRouting(routing)) return { error: 'unknown model routing' };
   if (typeof policy !== 'string' || !isPolicyName(policy)) return { error: 'unknown policy' };
-  const argv = ['orchestrate', '--workflow', workflow, '--task', task, '--dry-run', '--no-record', '--policy', policy, '--model-routing', routing];
+  const accept = body['acceptUnverified'] === true ? ['--accept-unverified'] : [];
+  const argv = ['orchestrate', '--workflow', workflow, '--task', task, '--dry-run', '--no-record', '--policy', policy, '--model-routing', routing, ...accept];
   const steps = obj(body['steps']) ?? {};
   for (const [group, flag] of [['models', '--step-model'], ['efforts', '--step-effort']] as const) {
     const map = obj(steps[group]) ?? {};
@@ -129,6 +131,27 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
         'content-security-policy': `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`,
       });
     }
+    if (req.method === 'GET' && path === '/api/status') {
+      if (!sameToken(req.headers['x-acl-token'] as string | undefined, token)) return json(res, 403, { error: 'missing or wrong token' });
+      if (busy) return json(res, 429, { error: 'a request is already running' });
+      busy = true;
+      try {
+        const ask = async (cmd: string): Promise<string> => {
+          let out = '';
+          const code = await options.run([cmd], { out: (t) => { out += t; }, error: () => undefined });
+          return code === 0 ? out : '';
+        };
+        const [providers, auth, quota, models] = [await ask('providers'), await ask('auth-status'), await ask('quota'), await ask('models')];
+        return json(res, 200, {
+          providers: mergeLogin(parseProviderLines(providers), auth),
+          quota: parseQuota(quota),
+          quotaText: quota === '' ? 'unavailable' : quota.split('\n')[0] ?? '',
+          models: parseModels(models),
+        });
+      } finally {
+        busy = false;
+      }
+    }
     if (req.method === 'POST' && path === '/api/dry-run') {
       if (!sameToken(req.headers['x-acl-token'] as string | undefined, token)) return json(res, 403, { error: 'missing or wrong token' });
       if (!(req.headers['content-type'] ?? '').startsWith('application/json')) return json(res, 415, { error: 'JSON only' });
@@ -155,7 +178,7 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
             errors += t;
           },
         });
-        return json(res, 200, { exitCode, output, errors });
+        return json(res, 200, { exitCode, output, errors, view: parseDryRun(output) });
       } finally {
         busy = false;
       }

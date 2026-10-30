@@ -4,6 +4,7 @@ import {
   DEFAULT_REQUEST,
   MANAGED_POLICY_LIMIT,
   MAX_HANDOFF_CHARS,
+  createVerificationGuard,
   createWorkspaceInspector,
   executeWorkflow,
   planImplementReviewSteps,
@@ -23,6 +24,7 @@ const WORKSPACE_PROBLEMS: Record<string, string> = {
   'detached-head': 'the workspace has a detached HEAD; check out a branch of its own first',
   'protected-branch': 'the workspace is on a protected branch or the main worktree\'s branch; use a branch of its own',
   'workspace-dirty': 'the workspace has uncommitted or untracked changes; commit or stash them first so every change can be attributed',
+  'ignored-coverage-partial': 'the workspace has ignored directories too large to compare in full (such as node_modules); changes inside them would only be seen one level deep. Use a worktree without them, or accept that limit with --allow-partial-ignored-check',
 };
 
 const WORKSPACE_UNREADABLE = 'the workspace Git state could not be read (not a repository, git missing, or an unexpected answer)';
@@ -48,7 +50,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     ...(deps.runner === undefined ? {} : { runner: deps.runner }),
     ...(deps.env === undefined ? {} : { env: deps.env }),
   };
-  const prep = await prepareWorkspace(cwd, gitDeps);
+  const prep = await prepareWorkspace(cwd, gitDeps, { allowPartialIgnored: args.allowPartialIgnored === true });
   // The write target must be the worktree root itself, not a folder inside it.
   const atRoot = prep.ok ? relative(prep.before.root, cwd) === '' : prep.reason === 'workspace-rejected' && relative(prep.snapshot.root, cwd) === '';
   const input = { task: args.task, request: DEFAULT_REQUEST, acceptUnverified: args.acceptUnverified, cwd };
@@ -78,15 +80,18 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         `  ${n(2)} implement [codex]: WRITE sandbox limited to the workspace, git ${codex.git}, subscription login: ${codexVerdict}\n` +
         codexIssues +
         `  ${n(3)} inspect [local]: read-only Git comparison with the state above, always runs, even after a failure or cancel\n` +
+        `      checks: ignored files too (by fingerprint; ${snapshot === undefined ? 'unknown' : snapshot.ignoredPartial.length === 0 ? 'compared in full' : `PARTIAL, one level deep in ${snapshot.ignoredPartial.join(', ')}`}), symlink/type/mode/submodule changes, writes into the main worktree\n` +
         `      limits: ${String(limits.maxFiles)} files, ${String(limits.maxChangedLines)} changed lines, ${String(limits.maxNewFileBytes)} bytes per new file; no binary files, symlinks, commits, branch changes or protected paths (.git, .github/workflows, .claude, .env*, ...)\n` +
+        '      review input: tracked diff plus new text files in full; a change that does not fit completely is rejected (review-incomplete), never reviewed in part\n' +
         (args.verify === undefined
           ? ''
-          : `  ${n(4)} verify [local]: ${[args.verify.command, ...args.verify.args].join(' ')} (no shell, cleaned environment; runs the newly written code outside any model sandbox)\n`) +
+          : `  ${n(4)} verify [local]: ${[args.verify.command, ...args.verify.args].join(' ')} (no shell, cleaned environment; RUNS THE NEWLY WRITTEN CODE OUTSIDE ANY MODEL SANDBOX, refused if build/test config files changed, state re-checked afterwards)\n`) +
         `  ${n(total)} review [claude]: tool-less; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each)\n` +
         '  guarantees: no commit, no push, no branch or main-tree changes, no workspace creation, no revert or delete, no retries, no provider fallback, no API keys\n' +
         '  on failure or cancel: the workspace keeps whatever was written; the final state is reported and nothing is rolled back\n' +
         `  managed policy: ${MANAGED_POLICY_LIMIT}\n` +
         '  requires: --confirm-write' +
+        (args.verify === undefined ? '' : ', --confirm-verify') +
         `${claude.selection.issues.length + codex.selection.issues.length > 0 ? ', --accept-unverified' : ''}\n` +
         `  verdict: ${ready ? 'would run' : 'would refuse'}\n`,
     );
@@ -113,6 +118,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
       [...claude.plan.warnings, ...codex.plan.warnings].map((i) => `  warning: ${describeIssue(i)}\n`).join(''),
   );
   const verifyCommand = args.verify;
+  const guard = createVerificationGuard({ cwd, git: gitDeps });
   const steps = planImplementReviewSteps({
     task: args.task,
     cwd,
@@ -120,14 +126,18 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     codexSelection: codex.selection,
     timeoutMs: args.timeoutMs,
     inspect: createWorkspaceInspector({ cwd, before: prep.before, git: gitDeps }),
-    ...(verifyCommand === undefined
+    ...(verifyCommand === undefined || args.confirmVerify !== true
       ? {}
       : {
-          verify: (signal: AbortSignal | undefined) =>
-            runVerify(
+          verify: async (signal: AbortSignal | undefined) => {
+            const refused = await guard.gate();
+            if (refused !== undefined) return refused;
+            const outcome = await runVerify(
               { command: verifyCommand, cwd, timeoutMs: args.timeoutMs, ...(signal === undefined ? {} : { signal }) },
               { ...(deps.runner === undefined ? {} : { runner: deps.runner }), ...(deps.env === undefined ? {} : { env: deps.env }) },
-            ),
+            );
+            return guard.after(outcome);
+          },
         }),
     ...(deps.runner === undefined ? {} : { runner: deps.runner }),
     ...(deps.env === undefined ? {} : { env: deps.env }),

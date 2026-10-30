@@ -47,6 +47,10 @@ export interface OrchestrateArgs {
   readonly confirmWrite?: boolean;
   /** `plan-implement-review` only: optional verification command. */
   readonly verify?: VerifyCommand;
+  /** `plan-implement-review` only: separate permission to run the verification command (newly written code, no model sandbox). */
+  readonly confirmVerify?: boolean;
+  /** `plan-implement-review` only: accept that huge ignored directories are compared one level deep. */
+  readonly allowPartialIgnored?: boolean;
 }
 
 export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs | string {
@@ -57,6 +61,8 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   let dryRun = false;
   let acceptUnverified = false;
   let confirmWrite = false;
+  let confirmVerify = false;
+  let allowPartialIgnored = false;
   let workspace: string | undefined;
   let verifyText: string | undefined;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
@@ -70,6 +76,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       acceptUnverified = true;
     } else if (arg === '--confirm-write') {
       confirmWrite = true;
+    } else if (arg === '--confirm-verify') {
+      confirmVerify = true;
+    } else if (arg === '--allow-partial-ignored-check') {
+      allowPartialIgnored = true;
     } else if (arg === '--workspace') {
       workspace = args[(i += 1)];
       if (workspace === undefined || workspace === '') return '--workspace needs an existing Git worktree directory';
@@ -103,15 +113,19 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
     }
     if (!confirmWrite && !dryRun) return 'plan-implement-review needs --confirm-write (it starts real sessions and writes files in the workspace) or --dry-run';
     let verify: VerifyCommand | undefined;
+    if (confirmVerify && verifyText === undefined) return '--confirm-verify needs --verify-command';
+    if (verifyText !== undefined && !confirmVerify && !dryRun) {
+      return '--verify-command runs the newly written code outside any model sandbox: add --confirm-verify to allow it (or run the tests yourself after reading the diff)';
+    }
     if (verifyText !== undefined) {
       const parsed = parseVerifyCommand(verifyText);
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, workspace, confirmWrite, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
-  if (confirmWrite || workspace !== undefined || verifyText !== undefined) {
-    return '--workspace, --verify-command and --confirm-write belong to plan-implement-review only';
+  if (confirmWrite || confirmVerify || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
+    return '--workspace, --verify-command, --confirm-verify, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
   }
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';

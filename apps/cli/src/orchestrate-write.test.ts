@@ -110,20 +110,24 @@ describe('parseOrchestrateArgs: plan-implement-review', () => {
       [...base, '--workspace', '/w', '--confirm'],
       [...base, '--workspace', '/w', '--confirm-write', '--cwd', '/c'],
       [...base, '--workspace'],
-      [...base, '--workspace', '/w', '--confirm-write', '--verify-command', 'rm -rf x'],
-      [...base, '--workspace', '/w', '--confirm-write', '--verify-command', 'pnpm test; id'],
+      [...base, '--workspace', '/w', '--confirm-write', '--confirm-verify', '--verify-command', 'rm -rf x'],
+      [...base, '--workspace', '/w', '--confirm-write', '--confirm-verify', '--verify-command', 'pnpm test; id'],
+      // Verification runs newly written code outside any model sandbox: it needs its own approval.
+      [...base, '--workspace', '/w', '--confirm-write', '--verify-command', 'pnpm test'],
+      [...base, '--workspace', '/w', '--confirm-write', '--confirm-verify'],
     ]) {
       expect(typeof parseOrchestrateArgs(args)).toBe('string');
     }
     expect(parseOrchestrateArgs([...base, '--workspace', '/w', '--dry-run'])).toMatchObject({ workspace: '/w', dryRun: true });
-    expect(parseOrchestrateArgs([...base, '--workspace', '/w', '--confirm-write', '--verify-command', 'pnpm test'])).toMatchObject({
+    expect(parseOrchestrateArgs([...base, '--workspace', '/w', '--confirm-write', '--verify-command', 'pnpm test', '--confirm-verify'])).toMatchObject({
       confirmWrite: true,
+      confirmVerify: true,
       verify: { command: 'pnpm', args: ['test'] },
     });
   });
 
   it('keeps the write options out of plan-review', () => {
-    for (const extra of [['--workspace', '/w'], ['--confirm-write'], ['--verify-command', 'pnpm test']]) {
+    for (const extra of [['--workspace', '/w'], ['--confirm-write'], ['--verify-command', 'pnpm test'], ['--confirm-verify'], ['--allow-partial-ignored-check']]) {
       expect(typeof parseOrchestrateArgs(['--workflow', 'plan-review', '--task', 'x', '--confirm', ...extra])).toBe('string');
     }
   });
@@ -140,7 +144,10 @@ describe('orchestrate plan-implement-review --dry-run', () => {
     expect(r.out).toContain('main worktree:');
     expect(r.out).toContain('implement [codex]: WRITE sandbox limited to the workspace');
     expect(r.out).toContain('inspect [local]');
-    expect(r.out).toContain('pnpm test (no shell, cleaned environment; runs the newly written code outside any model sandbox)');
+    expect(r.out).toContain('RUNS THE NEWLY WRITTEN CODE OUTSIDE ANY MODEL SANDBOX');
+    expect(r.out).toContain('requires: --confirm-write, --confirm-verify');
+    expect(r.out).toContain('ignored files too');
+    expect(r.out).toContain('review input: tracked diff plus new text files in full');
     expect(r.out).toContain('no commit, no push');
     expect(r.out).toContain('no workspace creation');
     expect(r.out).toContain('the workspace keeps whatever was written');
@@ -199,7 +206,7 @@ describe('orchestrate plan-implement-review --confirm-write', () => {
   it('plans, writes in the worktree, inspects, verifies and reviews, leaving main and history untouched', async () => {
     const before = mainState();
     const headBefore = git(wt, 'rev-parse', 'HEAD');
-    const r = await go([...WRITE(), '--verify-command', 'pnpm test'], { onCodex: editFile() });
+    const r = await go([...WRITE(), '--verify-command', 'pnpm test', '--confirm-verify'], { onCodex: editFile() });
     expect(r.code).toBe(0);
     expect(r.commands).toEqual(['claude', 'codex', 'pnpm', 'claude']);
     expect(r.specs[1]?.args).toEqual(expect.arrayContaining(['-s', 'workspace-write']));
@@ -215,6 +222,8 @@ describe('orchestrate plan-implement-review --confirm-write', () => {
     const review = r.specs[3]?.input ?? '';
     expect(review).toContain('<<<BEGIN UNTRUSTED CHANGES NONCE>>>');
     expect(review).toContain('+TWO');
+    expect(review).toContain('+export {};');
+    expect(review).toContain('review input: complete');
     expect(review).toContain('result: passed');
     // The implementation lives only in the worktree; nothing was committed.
     expect(git(wt, 'rev-parse', 'HEAD')).toBe(headBefore);
@@ -270,7 +279,7 @@ describe('orchestrate plan-implement-review --confirm-write', () => {
 
   it('cancels during the implementation: exit 130, state reported, nothing after it runs', async () => {
     const controller = new AbortController();
-    const r = await go([...WRITE(), '--verify-command', 'pnpm test'], {
+    const r = await go([...WRITE(), '--verify-command', 'pnpm test', '--confirm-verify'], {
       signal: controller.signal,
       onCodex: (spec) => {
         writeFileSync(join(spec.cwd, 'half.txt'), 'partial\n');
@@ -288,7 +297,7 @@ describe('orchestrate plan-implement-review --confirm-write', () => {
   });
 
   it('stops before the review when verification fails, and shows the verification result', async () => {
-    const r = await go([...WRITE(), '--verify-command', 'pnpm test'], {
+    const r = await go([...WRITE(), '--verify-command', 'pnpm test', '--confirm-verify'], {
       onCodex: editFile(),
       onVerify: () => ({ kind: 'completed', exitCode: 1, stdout: '1 test failed\n', truncated: false }),
     });
@@ -308,5 +317,76 @@ describe('orchestrate plan-implement-review --confirm-write', () => {
     expect(r.out).toMatch(/implement\s+codex\s+skipped/);
     expect(r.out).toContain('did not start');
     expect(r.out).not.toContain('partial changes');
+  });
+});
+
+describe('orchestrate plan-implement-review: review integrity and verification safety', () => {
+  const withVerify = () => [...WRITE(), '--verify-command', 'pnpm test', '--confirm-verify'];
+
+  it('rejects ignored-file changes that git status does not show', async () => {
+    writeFileSync(join(main, '.git', 'info', 'exclude'), 'cache/\n');
+    mkdirSync(join(wt, 'cache'));
+    writeFileSync(join(wt, 'cache', 'a.bin'), 'x');
+    const r = await go(WRITE(), {
+      onCodex: (spec) => {
+        writeFileSync(join(spec.cwd, 'cache', 'a.bin'), 'changed by the step');
+        writeFileSync(join(spec.cwd, 'a.txt'), 'one\nTWO\n');
+        return undefined;
+      },
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('error: workspace policy: ignored-file-changed');
+    expect(r.out).toMatch(/review\s+claude\s+skipped/);
+    expect(r.commands).toEqual(['claude', 'codex']);
+  });
+
+  it('never approves on an incomplete diff: the change is rejected and the review is skipped', async () => {
+    const r = await go(WRITE(), {
+      onCodex: (spec) => {
+        writeFileSync(join(spec.cwd, 'big.ts'), 'export const v = 1;\n'.repeat(700));
+        return undefined;
+      },
+    });
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('review-incomplete');
+    expect(r.out).toContain('no approval can be based on it');
+    expect(r.commands).toEqual(['claude', 'codex']);
+  });
+
+  it('refuses to run the verification when build or test configuration was changed', async () => {
+    const r = await go(withVerify(), {
+      onCodex: (spec) => {
+        writeFileSync(join(spec.cwd, 'package.json'), '{"scripts":{"test":"echo pwned"}}');
+        return undefined;
+      },
+    });
+    expect(r.code).toBe(1);
+    expect(r.commands).toEqual(['claude', 'codex']);
+    expect(r.out).toContain('error: verification refused: changed files can alter what the test command runs');
+    expect(r.out).toContain('package.json');
+    expect(r.out).toMatch(/review\s+claude\s+skipped/);
+  });
+
+  it('fails when the verification wrote into the main worktree or moved history', async () => {
+    writeFileSync(join(main, 'wip.txt'), 'mine');
+    const r = await go(withVerify(), {
+      onCodex: editFile(),
+      onVerify: () => {
+        writeFileSync(join(main, 'wip.txt'), 'clobbered by the code under test');
+        return done('tests passed\n');
+      },
+    });
+    expect(r.code).toBe(1);
+    expect(r.commands).toEqual(['claude', 'codex', 'pnpm']);
+    expect(r.out).toContain('error: workspace policy after verification: main-worktree-changed');
+    expect(r.out).toContain('result: passed');
+    expect(r.out).toMatch(/review\s+claude\s+skipped/);
+  });
+
+  it('does not run the verification command without its own approval flag', async () => {
+    const r = await go([...WRITE(), '--verify-command', 'pnpm test']);
+    expect(r.code).toBe(2);
+    expect(r.error).toContain('--confirm-verify');
+    expect(r.commands).toEqual([]);
   });
 });

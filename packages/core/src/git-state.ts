@@ -1,4 +1,5 @@
-import { lstat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+import { lstat, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sanitize } from './codex-run.ts';
 import { gitProbeEnv } from './git-preflight.ts';
@@ -90,6 +91,68 @@ export function parseNumstatZ(text: string): NumstatEntry[] | undefined {
   return entries;
 }
 
+/** Cheap fingerprint of one path: kind, size and mtime (`missing` if it cannot be read). Not a content hash. */
+async function fingerprint(path: string): Promise<string> {
+  try {
+    const info = await lstat(path);
+    const kind = info.isSymbolicLink() ? 'l' : info.isDirectory() ? 'd' : 'f';
+    return `${kind}:${String(info.size)}:${String(Math.floor(info.mtimeMs))}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+/** Entries walked inside ignored directories before the rest is only compared one level deep. */
+export const MAX_IGNORED_ENTRIES = 20_000;
+/** More dirty paths than this in the main worktree cannot be fingerprinted, so the state is unreadable. */
+const MAX_MAIN_DIRTY = 2000;
+
+/**
+ * Fingerprints every ignored path git reports. Ignored directories are walked (symlinks are not
+ * followed) until `MAX_IGNORED_ENTRIES` is used up; a directory that could not be walked fully is
+ * listed in `partial` and is only covered one level deep.
+ */
+async function fingerprintIgnored(root: string, listed: readonly string[]): Promise<{ sigs: Record<string, string>; partial: string[] }> {
+  const sigs: Record<string, string> = {};
+  const partial: string[] = [];
+  let left = MAX_IGNORED_ENTRIES;
+  const walk = async (rel: string): Promise<boolean> => {
+    let names: string[];
+    try {
+      names = (await readdir(join(root, rel))).sort();
+    } catch {
+      sigs[rel] = 'unreadable';
+      return true;
+    }
+    for (const name of names) {
+      if (left <= 0) return false;
+      left -= 1;
+      const child = `${rel}/${name}`;
+      const sig = await fingerprint(join(root, child));
+      sigs[child] = sig;
+      if (sig.startsWith('d:') && !(await walk(child))) return false;
+    }
+    return true;
+  };
+  for (const entry of listed) {
+    if (entry.endsWith('/')) {
+      const rel = entry.slice(0, -1);
+      sigs[rel] = await fingerprint(join(root, rel));
+      if (!(await walk(rel))) partial.push(entry);
+    } else {
+      sigs[entry] = await fingerprint(join(root, entry));
+    }
+  }
+  return { sigs, partial };
+}
+
+/** Collapses a fingerprint map to one stable string, for compact comparison and reporting. */
+export function digestSigs(sigs: Readonly<Record<string, string>>): string {
+  const hash = createHash('sha256');
+  for (const key of Object.keys(sigs).sort()) hash.update(`${key}\0${sigs[key] ?? ''}\0`);
+  return hash.digest('hex');
+}
+
 /** State of an isolated Git worktree at one moment. Branch refs are compared before and after. */
 export interface WorkspaceSnapshot {
   readonly root: string;
@@ -105,6 +168,12 @@ export interface WorkspaceSnapshot {
   readonly refs: Readonly<Record<string, string>>;
   /** Paths git reports as modified, staged or untracked. */
   readonly dirty: readonly string[];
+  /** Fingerprints of every ignored file (git status does not show them). */
+  readonly ignored: Readonly<Record<string, string>>;
+  /** Ignored directories too large to walk fully; they are compared one level deep only. */
+  readonly ignoredPartial: readonly string[];
+  /** Fingerprints of the main worktree's dirty paths, so writes into it are detected. */
+  readonly mainDirty: Readonly<Record<string, string>>;
 }
 
 export type SnapshotResult = { readonly ok: true; readonly snapshot: WorkspaceSnapshot } | { readonly ok: false };
@@ -129,21 +198,30 @@ export async function snapshotWorkspace(cwd: string, deps: GitReadDeps = {}): Pr
     ...(deps.platform === undefined ? {} : { platform: deps.platform }),
   });
   if (roots.state !== 'repo') return { ok: false };
-  const [head, branch, status, refs] = await Promise.all([
+  const [head, branch, status, refs, ignoredList] = await Promise.all([
     git(cwd, ['rev-parse', 'HEAD'], deps),
     git(cwd, ['symbolic-ref', '-q', '--short', 'HEAD'], deps),
     git(cwd, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], deps),
     git(cwd, ['for-each-ref', '--format=%(refname:short)%00%(objectname)', 'refs/heads'], deps),
+    git(roots.toplevel, ['ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'], deps),
   ]);
-  if (!head.ok || !status.ok || status.truncated || !refs.ok || refs.truncated) return { ok: false };
+  if (!head.ok || !status.ok || status.truncated || !refs.ok || refs.truncated || !ignoredList.ok || ignoredList.truncated) return { ok: false };
   const headSha = head.stdout.trim();
   // `symbolic-ref -q` exits 1 for a detached HEAD; any other failure is unknown.
   if (!branch.ok && branch.exitCode !== 1) return { ok: false };
   const entries = parseStatusZ(status.stdout);
   const refMap = parseRefs(refs.stdout);
   if (!SHA.test(headSha) || entries === undefined || refMap === undefined) return { ok: false };
+  const ignored = await fingerprintIgnored(roots.toplevel, ignoredList.stdout.split('\0').filter((p) => p !== ''));
   let mainBranch: string | undefined;
+  const mainDirty: Record<string, string> = {};
   if (roots.linkedFrom !== undefined) {
+    const mainStatus = await git(roots.linkedFrom, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], deps);
+    const mainEntries = mainStatus.ok && !mainStatus.truncated ? parseStatusZ(mainStatus.stdout) : undefined;
+    if (mainEntries === undefined || mainEntries.length > MAX_MAIN_DIRTY) return { ok: false };
+    for (const entry of mainEntries) {
+      mainDirty[entry.path] = `${entry.x}${entry.y}:${await fingerprint(join(roots.linkedFrom, entry.path))}`;
+    }
     const main = await git(roots.linkedFrom, ['symbolic-ref', '-q', '--short', 'HEAD'], deps);
     if (main.ok) mainBranch = main.stdout.trim() || undefined;
     else if (main.exitCode !== 1) return { ok: false };
@@ -159,6 +237,9 @@ export async function snapshotWorkspace(cwd: string, deps: GitReadDeps = {}): Pr
       mainBranch,
       refs: refMap,
       dirty: entries.map((e) => e.path),
+      ignored: ignored.sigs,
+      ignoredPartial: ignored.partial,
+      mainDirty,
     },
   };
 }
@@ -169,8 +250,32 @@ export interface UntrackedFile {
   readonly symlink: boolean;
 }
 
+/** One tracked path from `git diff --raw`: modes and status letter reveal symlinks, type changes and submodules. */
+export interface RawChange {
+  readonly path: string;
+  readonly oldMode: string;
+  readonly newMode: string;
+  readonly status: string;
+}
+
+/** Parses `git diff --raw -z --no-renames`; `undefined` if malformed. */
+export function parseRawZ(text: string): RawChange[] | undefined {
+  const parts = text.split('\0');
+  if (parts.at(-1) === '') parts.pop();
+  const changes: RawChange[] = [];
+  for (let i = 0; i < parts.length; i += 2) {
+    const meta = /^:(\d{6}) (\d{6}) [0-9a-f]+ [0-9a-f]+ ([A-Z])$/.exec(parts[i] ?? '');
+    const path = parts[i + 1];
+    if (meta === null || path === undefined || path === '') return undefined;
+    changes.push({ path, oldMode: meta[1] ?? '', newMode: meta[2] ?? '', status: meta[3] ?? '' });
+  }
+  return changes;
+}
+
 export interface WorkspaceChanges {
   readonly tracked: readonly NumstatEntry[];
+  /** Modes and status of every tracked change. */
+  readonly raw: readonly RawChange[];
   readonly untracked: readonly UntrackedFile[];
   /** Paths that are staged/modified/deleted/untracked, from `status`. */
   readonly paths: readonly string[];
@@ -180,14 +285,16 @@ export type ChangesResult = { readonly ok: true; readonly changes: WorkspaceChan
 
 /** Changes against HEAD: tracked files by `diff --numstat`, new files by `status`. */
 export async function collectChanges(root: string, deps: GitReadDeps = {}): Promise<ChangesResult> {
-  const [numstat, status] = await Promise.all([
+  const [numstat, rawDiff, status] = await Promise.all([
     git(root, ['diff', '--numstat', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', 'HEAD'], deps),
+    git(root, ['diff', '--raw', '-z', '--no-renames', '--no-ext-diff', '--no-textconv', 'HEAD'], deps),
     git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all'], deps),
   ]);
-  if (!numstat.ok || numstat.truncated || !status.ok || status.truncated) return { ok: false };
+  if (!numstat.ok || numstat.truncated || !rawDiff.ok || rawDiff.truncated || !status.ok || status.truncated) return { ok: false };
   const tracked = parseNumstatZ(numstat.stdout);
+  const raw = parseRawZ(rawDiff.stdout);
   const entries = parseStatusZ(status.stdout);
-  if (tracked === undefined || entries === undefined) return { ok: false };
+  if (tracked === undefined || raw === undefined || entries === undefined) return { ok: false };
   const untracked: UntrackedFile[] = [];
   for (const entry of entries.filter((e) => e.x === '?')) {
     try {
@@ -197,7 +304,7 @@ export async function collectChanges(root: string, deps: GitReadDeps = {}): Prom
       return { ok: false };
     }
   }
-  return { ok: true, changes: { tracked, untracked, paths: [...new Set([...tracked.map((t) => t.path), ...entries.map((e) => e.path)])] } };
+  return { ok: true, changes: { tracked, raw, untracked, paths: [...new Set([...tracked.map((t) => t.path), ...entries.map((e) => e.path)])] } };
 }
 
 /** Text diff of tracked files against HEAD with external diff and textconv programs disabled. */

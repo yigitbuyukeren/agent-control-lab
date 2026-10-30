@@ -38,7 +38,7 @@ The managed-policy limit in `docs/CLAUDE-RUN.md` applies here too.
 
 ```
 orchestrate --workflow plan-implement-review --task "<text>" --workspace <linked worktree> --dry-run
-orchestrate --workflow plan-implement-review --task "<text>" --workspace <linked worktree> --confirm-write [--accept-unverified] [--verify-command "pnpm test"] [--timeout <seconds per step>]
+orchestrate --workflow plan-implement-review --task "<text>" --workspace <linked worktree> --confirm-write [--accept-unverified] [--allow-partial-ignored-check] [--verify-command "pnpm test" --confirm-verify] [--timeout <seconds per step>]
 ```
 
 Claude plans (tool-less) → Codex implements with the `workspace-write` sandbox → a local step
@@ -62,23 +62,56 @@ and fake-CLI tests; it has not been run against real models.
 ## Git state before and after
 
 Read-only `git` only (`--no-optional-locks`, `core.fsmonitor=false`, no external diff or textconv):
-HEAD, branch, every local branch ref, and `status`. After the implementation step (also after a
-failure, timeout or cancel) the `inspect` step compares and **fails** on: a moved HEAD (a commit), a
-branch switch, any other branch created, moved or deleted (the main branch above all), no changes at
-all, more than 40 files or 1500 changed lines, a new file over 100 KB (300 KB together), binary files,
-new symlinks, paths outside the workspace, and protected paths (`.git`, `.github/workflows`,
-`.claude`, `.codex`, `.husky`, `.env*`, `.npmrc`, `.gitmodules`, `.gitattributes`, `CLAUDE.md`,
-`AGENTS.md`). The report lists files and line counts, then a diff of tracked files cut to 10000
-characters (new files appear by name and size only). Hooks and `.git` internals outside the worktree
-are not diffed; the sandbox is what protects them.
+HEAD, branch, every local branch ref, `status`, ignored files, tracked file modes, and the main
+worktree's dirty paths. After the implementation step (also after a failure, timeout or cancel) the
+`inspect` step compares and **fails** on:
+
+- a moved HEAD (a commit), a branch switch, any other branch created, moved or deleted
+  (the main branch above all), no changes at all;
+- **ignored files**: `git status` never lists them, so every ignored file is fingerprinted (kind,
+  size, mtime) before and after; any added, removed or changed one fails. Ignored directories are
+  walked (symlinks not followed) up to 20000 entries. A larger one (typically `node_modules`) is
+  only compared one level deep; that is **partial coverage**, so the workspace is refused unless you
+  pass `--allow-partial-ignored-check`, and the report says PARTIAL. Fingerprints are not content
+  hashes: a same-size rewrite inside the mtime resolution is not seen;
+- **tracked symlinks and file types** (`git diff --raw` modes): a symlink added, changed or removed,
+  a file turned into a directory/symlink, an executable-bit change, a submodule change;
+- **writes into the main worktree**: its dirty paths are fingerprinted too;
+- size: more than 25 files or 400 changed lines, a new file over 20 KB (40 KB together), binary files,
+  new symlinks, paths outside the workspace, and protected paths (`.git`, `.github/workflows`,
+  `.claude`, `.codex`, `.husky`, `.env*`, `.npmrc`, `.gitmodules`, `.gitattributes`, `CLAUDE.md`,
+  `AGENTS.md`). The limits are sized so that a change inside them fits the review input.
+
+Hooks and `.git` internals outside the worktree are not diffed; the sandbox is what protects them.
+
+## What the reviewer sees, and when there is no review
+
+The review input is the diff of tracked files followed by every new text file as added lines, at most
+12000 characters in total, and the report states `review input: complete`. If any part cannot be shown
+in full (diff unreadable or cut, a new file unreadable, not UTF-8 text, or cut, report too long) the
+change is **rejected as `review-incomplete`**: the report says `INCOMPLETE`, the review step is skipped
+and no approval can come out of it. The reviewer is also told not to approve unless the input says it
+is complete. The verdict is advisory model output, never a gate; you decide what to merge.
 
 ## Verification
 
-`--verify-command` is opt-in. It must be plain words starting with `pnpm npm yarn bun deno node
-pytest python python3 cargo go make dotnet mvn gradle swift`; shell syntax is rejected, not
-interpreted. It runs without a shell in the workspace with a cleaned environment (no API keys or
-proxy variables). **It executes the code the model just wrote, outside any model sandbox**; read the
-diff first if that matters. A failure stops the review.
+`--verify-command` is opt-in and needs its **own approval**, `--confirm-verify` (separate from
+`--confirm-write`; without it the command is refused at parse time and nothing starts). The command is
+plain words starting with `pnpm npm yarn bun deno node pytest python python3 cargo go make dotnet mvn
+gradle swift`; shell syntax is rejected, not interpreted. It runs without a shell in the workspace with
+a cleaned environment (no API keys or proxy variables), a timeout, and process-tree kill.
+
+**It still executes code the model just wrote, outside any model sandbox. There is no portable sandbox
+for it; this is risk reduction, not isolation.** What is added:
+
+- before running, verification is **refused** if the step changed a file that decides what a test or
+  build runs (`package.json`, `Makefile`, `pyproject.toml`, `conftest.py`, `Cargo.toml`, `build.rs`,
+  `*.config.*`, `*.csproj`, ...), so the model cannot rewire the test command; run those tests yourself
+  after reading the diff;
+- afterwards the workspace and the main worktree are compared again: a moved HEAD or branch, a
+  changed main-worktree path, rewritten tracked files or a new protected path fail the step;
+- a failed verification stops the review. Reading the diff and running tests yourself remains the
+  safest option, and verification can simply be left out.
 
 ## Failure, timeout, cancel
 

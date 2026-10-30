@@ -72,7 +72,7 @@ Commands:
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
   orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>]
                         Claude drafts a plan, Codex reviews it read-only; stops at the first failure (no retry, no fallback)
-  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified]) [--verify-command "<pnpm test>"] [--timeout <seconds per step>]
+  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>]
                         Claude plans, Codex WRITES in that worktree only, limits are checked, Claude reviews the diff; no commit or push
   run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent

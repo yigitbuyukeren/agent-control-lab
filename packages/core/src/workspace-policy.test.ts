@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkspaceChanges, WorkspaceSnapshot } from './git-state.ts';
-import { DEFAULT_LIMITS, checkWorkspaceChanges, checkWorkspaceStart, isProtectedBranch, isProtectedPath } from './workspace-policy.ts';
+import { DEFAULT_LIMITS, checkAfterVerification, checkWorkspaceChanges, checkWorkspaceStart, differing, isProtectedBranch, isProtectedPath, isVerifyHarnessPath } from './workspace-policy.ts';
 
 const SHA_A = 'a'.repeat(40);
 const SHA_B = 'b'.repeat(40);
@@ -8,13 +8,13 @@ const SHA_B = 'b'.repeat(40);
 function snap(over: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
   return {
     root: '/ws', head: SHA_A, branch: 'feature', linked: true, mainRoot: '/main', mainBranch: 'main',
-    refs: { main: SHA_A, feature: SHA_A }, dirty: [], ...over,
+    refs: { main: SHA_A, feature: SHA_A }, dirty: [], ignored: {}, ignoredPartial: [], mainDirty: {}, ...over,
   };
 }
 
 function changes(over: Partial<WorkspaceChanges> = {}): WorkspaceChanges {
   const tracked = over.tracked ?? [{ path: 'src/a.ts', added: 3, deleted: 1 }];
-  return { tracked, untracked: [], paths: tracked.map((t) => t.path), ...over };
+  return { tracked, raw: [], untracked: [], paths: tracked.map((t) => t.path), ...over };
 }
 
 const codes = (before: WorkspaceSnapshot, after: WorkspaceSnapshot, c: WorkspaceChanges, limits = DEFAULT_LIMITS) =>
@@ -97,5 +97,84 @@ describe('checkWorkspaceChanges', () => {
     for (const path of ['src/environment.ts', '.github/ISSUE_TEMPLATE/a.md', 'docs/claude-notes.md', '.gitignore', 'envfile']) {
       expect(isProtectedPath(path)).toBe(false);
     }
+  });
+});
+
+const raw = (path: string, oldMode: string, newMode: string, status = 'M') => ({ path, oldMode, newMode, status });
+
+describe('checkWorkspaceChanges: ignored files, main worktree and file types', () => {
+  it('flags ignored files that appear, disappear or change, which git status never shows', () => {
+    const before = snap({ ignored: { 'dist/a.js': 'f:1:1', '.cache/x': 'f:2:2', gone: 'f:3:3' } });
+    const after = snap({ ignored: { 'dist/a.js': 'f:9:1', '.cache/x': 'f:2:2', fresh: 'f:1:1' } });
+    const result = checkWorkspaceChanges(before, after, changes());
+    expect(result).toEqual([{ code: 'ignored-file-changed', detail: 'dist/a.js, fresh, gone' }]);
+    expect(codes(before, before, changes())).toEqual([]);
+  });
+
+  it('flags writes into the main worktree', () => {
+    const before = snap({ mainDirty: { 'wip.txt': ' M:f:3:1' } });
+    expect(codes(before, snap({ mainDirty: { 'wip.txt': ' M:f:9:1' } }), changes())).toEqual(['main-worktree-changed']);
+    expect(codes(before, snap({ mainDirty: { 'wip.txt': ' M:f:3:1', 'new.txt': '??:f:1:1' } }), changes())).toEqual(['main-worktree-changed']);
+    expect(codes(before, snap({ mainDirty: {} }), changes())).toEqual(['main-worktree-changed']);
+  });
+
+  it('flags tracked symlinks (added, changed, removed), type changes, exec-bit changes and submodules', () => {
+    const cases: [ReturnType<typeof raw>, string][] = [
+      [raw('l', '000000', '120000', 'A'), 'symlink-change'],
+      [raw('l', '100644', '120000', 'T'), 'symlink-change'],
+      [raw('l', '120000', '120000'), 'symlink-change'],
+      [raw('l', '120000', '000000', 'D'), 'symlink-change'],
+      [raw('t', '100644', '040000', 'T'), 'type-change'],
+      [raw('x.sh', '100644', '100755'), 'mode-change'],
+      [raw('sub', '160000', '160000'), 'submodule-change'],
+    ];
+    for (const [r, code] of cases) {
+      const found = codes(snap(), snap(), changes({ raw: [r] }));
+      expect(found).toContain(code);
+    }
+    expect(codes(snap(), snap(), changes({ raw: [raw('a.ts', '100644', '100644')] }))).toEqual([]);
+    expect(codes(snap(), snap(), changes({ raw: [raw('new', '000000', '100644', 'A')] }))).toEqual([]);
+    expect(codes(snap(), snap(), changes({ raw: [raw('x.sh', '100644', '100755')] }))).toEqual(['mode-change']);
+  });
+
+  it('compares fingerprint maps', () => {
+    expect(differing({ a: '1', b: '2' }, { a: '1', b: '3', c: '1' })).toEqual(['b', 'c']);
+    expect(differing({}, {})).toEqual([]);
+  });
+});
+
+describe('checkWorkspaceStart: ignored coverage', () => {
+  it('fails closed on partially covered ignored directories unless explicitly accepted', () => {
+    const partial = snap({ ignoredPartial: ['node_modules/'] });
+    expect(checkWorkspaceStart(partial)).toEqual(['ignored-coverage-partial']);
+    expect(checkWorkspaceStart(partial, { allowPartialIgnored: false })).toEqual(['ignored-coverage-partial']);
+    expect(checkWorkspaceStart(partial, { allowPartialIgnored: true })).toEqual([]);
+  });
+});
+
+describe('isVerifyHarnessPath', () => {
+  it('recognises files that decide what a test or build command runs', () => {
+    for (const path of ['package.json', 'sub/package.json', 'Makefile', 'pyproject.toml', 'conftest.py', 'tests/conftest.py', 'Cargo.toml', 'build.rs', '.cargo/config.toml', 'vitest.config.ts', 'jest.config.js', 'vite.config.mts', 'webpack.config.cjs', 'build.gradle.kts', 'app.csproj', 'Directory.Build.props', '.mocharc.json', 'x\\package.json']) {
+      expect(isVerifyHarnessPath(path)).toBe(true);
+    }
+    for (const path of ['src/a.ts', 'tests/a.test.ts', 'README.md', 'docs/package-notes.md', 'lib/config.ts', 'src/build.ts']) {
+      expect(isVerifyHarnessPath(path)).toBe(false);
+    }
+  });
+});
+
+describe('checkAfterVerification', () => {
+  const same = changes({ raw: [] });
+  it('accepts a verification that only produced output', () => {
+    expect(checkAfterVerification(snap(), snap(), same, { ...same, untracked: [{ path: 'coverage/x', bytes: 1, symlink: false }], paths: [...same.paths, 'coverage/x'] })).toEqual([]);
+  });
+  it('flags moved history, a changed main worktree, rewritten tracked files and new protected paths', () => {
+    const result = checkAfterVerification(
+      snap(),
+      snap({ head: SHA_B, refs: { main: SHA_B, feature: SHA_B }, mainDirty: { x: '??:f:1:1' } }),
+      same,
+      { ...same, tracked: [{ path: 'src/a.ts', added: 9, deleted: 1 }], paths: [...same.paths, '.github/workflows/x.yml'] },
+    );
+    expect(result.map((p) => p.code)).toEqual(['head-moved', 'other-branch-changed', 'main-worktree-changed', 'review-incomplete', 'protected-path']);
   });
 });

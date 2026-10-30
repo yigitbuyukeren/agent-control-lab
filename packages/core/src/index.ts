@@ -30,3 +30,4 @@ export * from './auth.ts';
 export * from './quota.ts';
 export * from './claude-quota.ts';
 export * from './claude-cache.ts';
+export * from './quota-model.ts';

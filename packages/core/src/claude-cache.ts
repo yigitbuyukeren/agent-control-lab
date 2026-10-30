@@ -99,7 +99,9 @@ export function parseCache(text: string, now: Date): ClaudeQuotaStatus {
   const updated = isoTime(record?.['updatedAt']);
   if (record === undefined || record['version'] !== 1 || updated === undefined) return unknown;
   const age = now.getTime() - updated.getTime();
-  if (age > MAX_CACHE_AGE_MS || age < -MAX_FUTURE_SKEW_MS) return unknown;
+  if (age < -MAX_FUTURE_SKEW_MS) return unknown;
+  // Stale data keeps its age so callers can say so, but carries no percentages.
+  if (age > MAX_CACHE_AGE_MS) return { state: 'unknown', updatedAt: updated.toISOString() };
   const fiveHour = loadWindow(record['fiveHour'], 300, now);
   const sevenDay = loadWindow(record['sevenDay'], 10080, now);
   if (fiveHour === undefined && sevenDay === undefined) return unknown;

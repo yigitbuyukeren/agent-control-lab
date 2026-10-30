@@ -6,6 +6,7 @@ import {
   getInfo,
   parseClaudeStatusLine,
   parseCommand,
+  readAllQuotas,
   readClaudeCache,
   readCodexQuota,
   resolveCacheDir,
@@ -13,6 +14,8 @@ import {
   type AppServerSpawn,
   type AuthStatus,
   type ClaudeQuotaStatus,
+  type ProviderQuota,
+  type UsageWindow,
   type Exec,
   type ProviderStatus,
   type QuotaStatus,
@@ -30,6 +33,7 @@ Commands:
   info      Print runtime information
   providers Show installed AI CLI providers (local --version check only)
   quota     Show Codex rate-limit usage (read-only app-server query)
+  quota all             Show Claude (local cache) and Codex (app-server) limits together
   quota claude          Show Claude Code limits from the local statusLine cache
   quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
   statusline-collect    Store 5h/7d limits from statusLine JSON on stdin (opt-in, see docs/STATUSLINE.md)
@@ -134,6 +138,24 @@ function formatClaudeQuota(q: ClaudeQuotaStatus): string {
   return `Claude Code quota: ${q.state === 'ok' ? 'ok' : 'unknown'}\n${formatClaudeLine('5h window', q.fiveHour)}${formatClaudeLine('7d window', q.sevenDay)}${updated}`;
 }
 
+function formatUsageWindow(w: UsageWindow): string {
+  const used = w.usedPercent === undefined ? 'usage unknown' : `${String(w.usedPercent)}% used, ${String(w.remainingPercent)}% left`;
+  const reset = w.resetsAt === undefined ? 'reset unknown' : `resets ${w.resetsAt}`;
+  return `  ${w.label} window: ${used}, ${reset}\n`;
+}
+
+function formatProviderQuota(q: ProviderQuota): string {
+  if (q.state === 'not-installed') return `${q.displayName}: not installed\n`;
+  if (q.state === 'error') return `${q.displayName}: error: ${q.error ?? 'unknown'}\n`;
+  const notes = [
+    q.source,
+    q.freshness === 'unknown' || q.freshness === q.source ? undefined : q.freshness,
+    q.updatedAt === undefined ? undefined : `updated ${q.updatedAt}`,
+    q.plan === undefined ? undefined : `plan ${q.plan}`,
+  ].filter((note) => note !== undefined);
+  return `${q.displayName}: ${q.state} (${notes.join(', ')})\n${q.windows.map(formatUsageWindow).join('')}`;
+}
+
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   const parsed = parseCommand(argv);
   if (!parsed.ok) {
@@ -159,6 +181,15 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     }
     case 'quota': {
       const [, target, flag] = argv;
+      if (target === 'all') {
+        const quotas = await readAllQuotas({
+          claudeCacheDir: deps.cacheDir ?? resolveCacheDir(),
+          ...(deps.appServer === undefined ? {} : { appServer: deps.appServer }),
+          ...(deps.now === undefined ? {} : { now: deps.now }),
+        });
+        io.out(quotas.map(formatProviderQuota).join(''));
+        return 0;
+      }
       if (target === 'claude') {
         if (flag === undefined) {
           const dir = deps.cacheDir ?? resolveCacheDir();

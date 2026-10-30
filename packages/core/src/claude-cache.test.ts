@@ -95,7 +95,10 @@ describe('parseCache', () => {
   const later = (ms: number) => new Date(NOW.getTime() + ms);
 
   it('is unknown when stale, future-dated or missing', () => {
-    expect(parseCache(fresh, later(MAX_CACHE_AGE_MS + 1))).toEqual({ state: 'unknown' });
+    expect(parseCache(fresh, later(MAX_CACHE_AGE_MS + 1))).toEqual({
+      state: 'unknown',
+      updatedAt: NOW.toISOString(),
+    });
     expect(parseCache(fresh, later(-10 * 60_000))).toEqual({ state: 'unknown' });
     expect(parseCache('', NOW)).toEqual({ state: 'unknown' });
   });

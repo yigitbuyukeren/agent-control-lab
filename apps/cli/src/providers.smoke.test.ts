@@ -93,4 +93,26 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
       rmSync(cache, { recursive: true, force: true });
     }
   });
+
+  it('quota all works through the real binary when codex is missing from PATH', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'acl-smoke-all-'));
+    try {
+      const env: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined && key.toLowerCase() !== 'path') env[key] = value;
+      }
+      env['PATH'] = join(cache, 'no-binaries-here');
+      env['ACL_CACHE_DIR'] = cache;
+      const now = Math.floor(Date.now() / 1000);
+      const input = JSON.stringify({ rate_limits: { five_hour: { used_percentage: 25, resets_at: now + 3600 } } });
+      execFileSync(process.execPath, [bin, 'statusline-collect'], { input, env, encoding: 'utf8', timeout: 20000 });
+      const out = execFileSync(process.execPath, [bin, 'quota', 'all'], { env, encoding: 'utf8', timeout: 20000 });
+      expect(out).toContain('Claude Code: ok (cache, fresh');
+      expect(out).toContain('5h window: 25% used, 75% left');
+      expect(out).toContain('7d window: usage unknown, reset unknown');
+      expect(out).toContain('Codex: not installed');
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
+  });
 });

@@ -114,6 +114,61 @@ describe('cli', () => {
     expect(out).toContain('Claude Code quota: unknown');
   });
 
+  describe('quota all', () => {
+    const NOW = new Date('2027-01-15T00:00:00Z');
+    const codexServer = (): AppServerProcess => {
+      let lineCb: (line: string) => void = () => undefined;
+      return {
+        send: (line) => {
+          const m = JSON.parse(line) as { id?: number };
+          if (m.id === 1) queueMicrotask(() => { lineCb('{"id":1,"result":{}}'); });
+          if (m.id === 2) {
+            const result = { rateLimits: { planType: 'pro', primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1800000000 } } };
+            queueMicrotask(() => { lineCb(JSON.stringify({ id: 2, result })); });
+          }
+        },
+        onLine: (cb) => (lineCb = cb),
+        onExit: () => undefined,
+        kill: () => Promise.resolve(),
+      };
+    };
+
+    it('shows both providers with used/left, reset, freshness and unknown', async () => {
+      const cacheDir = mkdtempSync(join(tmpdir(), 'acl-all-cli-'));
+      try {
+        const input = JSON.stringify({ rate_limits: { five_hour: { used_percentage: 20, resets_at: 1800000000 } } });
+        await run(['statusline-collect'], { out: () => undefined, error: () => undefined }, { cacheDir, now: () => NOW, readStdin: () => Promise.resolve(input) });
+        let out = '';
+        const code = await run(['quota', 'all'], { out: (t) => (out += t), error: () => undefined }, { cacheDir, now: () => NOW, appServer: codexServer });
+        expect(code).toBe(0);
+        expect(out).toContain('Claude Code: ok (cache, fresh, updated 2027-01-15T00:00:00.000Z)');
+        expect(out).toContain('5h window: 20% used, 80% left, resets 2027-01-15T08:00:00.000Z');
+        expect(out).toContain('7d window: usage unknown, reset unknown');
+        expect(out).toContain('Codex: ok (live, updated 2027-01-15T00:00:00.000Z, plan pro)');
+        expect(out).toContain('5h window: 12% used, 88% left');
+        expect(out).toContain('secondary window: usage unknown, reset unknown');
+      } finally {
+        rmSync(cacheDir, { recursive: true, force: true });
+      }
+    });
+
+    it('marks stale Claude data as unknown without counting it as 0', async () => {
+      const cacheDir = mkdtempSync(join(tmpdir(), 'acl-all-stale-'));
+      try {
+        const input = JSON.stringify({ rate_limits: { five_hour: { used_percentage: 20, resets_at: 1800000000 } } });
+        await run(['statusline-collect'], { out: () => undefined, error: () => undefined }, { cacheDir, now: () => NOW, readStdin: () => Promise.resolve(input) });
+        let out = '';
+        const later = new Date(NOW.getTime() + 3_600_000);
+        await run(['quota', 'all'], { out: (t) => (out += t), error: () => undefined }, { cacheDir, now: () => later, appServer: codexServer });
+        expect(out).toContain('Claude Code: unknown (cache, stale, updated 2027-01-15T00:00:00.000Z)');
+        expect(out).not.toContain('20% used');
+        expect(out).not.toContain('0% used');
+      } finally {
+        rmSync(cacheDir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('statusline cache', () => {
     const input = JSON.stringify({
       session_id: 'secret-session',

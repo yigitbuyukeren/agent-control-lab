@@ -24,6 +24,8 @@ export function isDefaultRequest(request: SelectionRequest): boolean {
 export interface ModelCatalog {
   readonly claude: readonly ModelCapability[];
   readonly codex: CodexModelsResult;
+  /** Effort names the installed Claude CLI says it accepts (`claude --help`); absent when not readable. */
+  readonly claudeEfforts?: readonly string[];
 }
 
 export type EffortUnverifiedReason =
@@ -133,6 +135,9 @@ export function resolveSelection(
     const level = asEffortLevel(request.effort);
     if (level === undefined) {
       issues.push({ code: 'effort-invalid', blocking: true, effort: request.effort });
+    } else if (provider === 'claude' && catalog.claudeEfforts !== undefined && !catalog.claudeEfforts.includes(level)) {
+      // The installed CLI lists the levels it accepts; anything else it would reject.
+      issues.push({ code: 'effort-unsupported', blocking: true, effort: level, supported: catalog.claudeEfforts });
     } else if (request.model === 'auto') {
       if (provider === 'claude' && !CLAUDE_EFFORT_LEVELS.includes(level)) {
         issues.push({ code: 'effort-unsupported', blocking: true, effort: level, supported: CLAUDE_EFFORT_LEVELS });

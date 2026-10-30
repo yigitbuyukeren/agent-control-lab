@@ -38,6 +38,7 @@ export * from './quota-model.ts';
 export * from './routing.ts';
 export * from './models.ts';
 export * from './app-server-client.ts';
+export * from './claude-help.ts';
 export * from './selection.ts';
 export * from './step-selection.ts';
 export * from './step-policy.ts';

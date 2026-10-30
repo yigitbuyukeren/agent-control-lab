@@ -49,6 +49,7 @@ import {
   type QuotaWindow,
 } from '@agent-control-lab/core';
 import { VERSION } from '@agent-control-lab/shared';
+import { describeClaudeFacts } from './claude-facts.ts';
 import { REFUSALS, CLAUDE_REFUSALS, describeIssue, describePinned } from './format.ts';
 import { runPlanImplementReviewCommand } from './orchestrate-write.ts';
 import { parseOrchestrateArgs, runOrchestrateCommand } from './orchestrate.ts';
@@ -78,6 +79,7 @@ Commands:
   run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
+  models claude         Show what can be verified about Claude models without a model call (rest: UNKNOWN)
   models check <claude|codex> <model> <effort>
                         Exit 0 supported, 1 unsupported, 3 unknown
   route --dry-run --task <kind> [--prefer claude|codex|auto] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode]
@@ -577,8 +579,12 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         );
         return 0;
       }
+      if (sub === 'claude' && provider === undefined) {
+        io.out(await describeClaudeFacts(deps));
+        return 0;
+      }
       if (sub !== 'check' || (provider !== 'claude' && provider !== 'codex') || modelId === undefined || effort === undefined) {
-        io.error('usage: agent-control-lab models [check <claude|codex> <model> <effort>]\n');
+        io.error('usage: agent-control-lab models [claude | check <claude|codex> <model> <effort>]\n');
         return 2;
       }
       let registry: readonly ModelCapability[] = claudeRegistry;

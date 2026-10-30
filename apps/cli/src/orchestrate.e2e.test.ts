@@ -25,6 +25,8 @@ process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
   fs.writeFileSync(path.join(mode.markerDir || process.cwd(), 'claude.marker'), JSON.stringify({ args, stdin }));
   if (mode.claude === 'fail') process.exit(1);
+  const at = args.indexOf('--model');
+  if (mode.knownModels && at !== -1 && !mode.knownModels.includes(args[at + 1])) { console.error('unknown model'); process.exit(1); }
   console.log(mode.plan);
 });
 `;
@@ -257,5 +259,68 @@ describe('orchestrate plan-implement-review against fake CLIs and real git', () 
     expect(r.stdout).toMatch(/implement\s+codex\s+timeout/);
     expect(r.stdout).toMatch(/inspect\s+local\s+failed/);
     expect(r.stdout).toContain('The workspace may contain partial changes; nothing was reverted.');
+  });
+});
+
+// What the installed CLI says about models and efforts, as `claude --help` prints it (wrapped).
+const HELP_WITH_MODELS = [
+  ...CLAUDE_FLAGS.map((f) => `  ${f}  text`),
+  '  --effort <level>                      Effort level for the current session',
+  '                                        (low, medium, high, xhigh, max)',
+  '  --model <model>                       Model for the current session. Provide',
+  "                                        an alias for the latest model (e.g.",
+  "                                        'fable', 'opus', or 'sonnet') or a",
+  "                                        model's full name.",
+  '  -n, --name <name>                     Set a display name',
+];
+
+describe('Claude model and effort selection against a fake CLI', () => {
+  it('reports what the CLI says and shows everything else as UNKNOWN', () => {
+    setMode({ help: HELP_WITH_MODELS });
+    const r = runCli(['models', 'claude']);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain('model aliases the CLI mentions: fable, opus, sonnet');
+    expect(r.stdout).toContain('effort levels the CLI accepts: low, medium, high, xhigh, max');
+    expect(r.stdout).toContain('models this account can use: UNKNOWN');
+    expect(r.stdout).toContain('active default model: UNKNOWN');
+    expect(r.stdout).toContain('efforts per model: UNKNOWN');
+    expect(r.stdout).toContain('NOT evidence of access');
+    setMode();
+    const bare = runCli(['models', 'claude']);
+    expect(bare.stdout).toContain('model aliases the CLI mentions: UNKNOWN');
+    expect(bare.stdout).toContain('effort levels the CLI accepts: UNKNOWN');
+  });
+
+  it('delivers a manually chosen model and effort to the Claude process, after accepting that they are unverified', () => {
+    initRepo();
+    setMode({ help: [...HELP_WITH_MODELS, '  --model <model>', '  --effort <level>'] });
+    const refused = runCli([...ARGS(), '--confirm', '--step-model', 'plan=sonnet', '--step-effort', 'plan=high']);
+    expect(refused.code).toBe(1);
+    expect(marker('claude')).toBeUndefined();
+    const r = runCli([...ARGS(), '--confirm', '--step-model', 'plan=sonnet', '--step-effort', 'plan=high', '--accept-unverified']);
+    expect(r.code).toBe(0);
+    const args = marker('claude')?.args ?? [];
+    expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'sonnet']);
+    expect(args.slice(args.indexOf('--effort'), args.indexOf('--effort') + 2)).toEqual(['--effort', 'high']);
+  });
+
+  it('refuses an effort the installed CLI does not list before any process starts', () => {
+    initRepo();
+    setMode({ help: [...HELP_WITH_MODELS, '  --model <model>', '  --effort <level>'] });
+    const r = runCli([...ARGS(), '--confirm', '--step-effort', 'plan=ultra', '--accept-unverified']);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('effort-unsupported');
+    expect(r.stderr).toContain('supported: low, medium, high, xhigh, max');
+    expect(marker('claude')).toBeUndefined();
+  });
+
+  it('reports a model the CLI itself rejects as a failed step and does not fall back to another model', () => {
+    initRepo();
+    setMode({ help: [...HELP_WITH_MODELS, '  --model <model>', '  --effort <level>'], knownModels: ['sonnet'] });
+    const r = runCli([...ARGS(), '--confirm', '--step-model', 'plan=nope', '--accept-unverified']);
+    expect(r.code).toBe(1);
+    expect(r.stdout).toMatch(/plan\s+claude\s+failed/);
+    expect(r.stdout).not.toContain('unknown model');
+    expect(marker('codex')).toBeUndefined();
   });
 });

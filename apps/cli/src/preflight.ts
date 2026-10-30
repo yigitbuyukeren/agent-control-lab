@@ -10,6 +10,7 @@ import {
   detectProvider,
   discoverCodexModels,
   missingClaudeFlags,
+  parseClaudeHelp,
   planClaudeRun,
   planCodexRun,
   redirectingEnvNames,
@@ -70,7 +71,12 @@ export async function claudePreflight(input: PreflightInput, deps: PreflightDeps
     exec('claude', ['--help'], { timeoutMs: 5000 }),
     (deps.claudeSettings ?? ((dir: string) => scanClaudeSettingsFor(dir)))(input.cwd),
   ]);
-  const selection = resolveSelection('claude', input.request, { claude: claudeRegistry, codex: { state: 'ok', models: [] } });
+  const facts = help.kind === 'ok' ? parseClaudeHelp(help.stdout) : undefined;
+  const selection = resolveSelection('claude', input.request, {
+    claude: claudeRegistry,
+    codex: { state: 'ok', models: [] },
+    ...(facts?.efforts === undefined ? {} : { claudeEfforts: facts.efforts }),
+  });
   const extraFlags = [
     ...(input.request.model === 'auto' ? [] : ['--model']),
     ...(input.request.effort === 'auto' && input.request.mode === 'normal' ? [] : ['--effort']),

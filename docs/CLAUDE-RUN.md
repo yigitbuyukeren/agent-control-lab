@@ -47,3 +47,34 @@ A clean scan is **not** proof that the active managed policy is safe. Not covere
   separately and which can be "not fetched" without credentials
 
 The dry run prints this as `managed policy: file scan only ...`. Only a managed *file* is checked.
+
+## Models and efforts: what can be verified
+
+`agent-control-lab models claude` prints what can be established **without calling a model**, each with
+its source, and `UNKNOWN` for everything else. Researched against Claude Code 2.1.312:
+
+| Question | Answer | Source |
+|---|---|---|
+| CLI version, login method and plan | verified | `claude --version`, `claude auth status` |
+| Effort names the installed CLI accepts | verified for the CLI (not per model) | the `--effort` text of `claude --help` |
+| Model aliases | examples only (`fable`, `opus`, `sonnet`), not a list | the `--model` text of `claude --help` |
+| Models this account can use | **UNKNOWN** | no CLI command lists them; only a real call proves access |
+| Active default model | **UNKNOWN** | chosen by plan and account; `--restricted` ignores user and project settings |
+| Efforts per model, ultracode support | **UNKNOWN** | not reported by the CLI |
+
+Not used on purpose: `~/.claude.json` (`additionalModelOptionsCache`, `modelAccessCache`) and
+`~/.claude/cache/model-catalog/*.json` look like cached account data, but they are undocumented
+internals, can change between versions, and the catalog files are keyed by hashed account ids that cannot
+be matched to the running login. They would be hints at best, not proof.
+
+What changes in a run: an effort the installed CLI does not list is **blocked** before anything starts.
+An accepted effort and any `--model` stay **unverified** (they need `--accept-unverified`), because no
+local check proves this account can use that model or that the model supports that effort. The built-in
+registry (`claude-opus-5-5`, ...) is shipped documentation and is never treated as access evidence.
+
+Manual selection is covered by end-to-end tests against a fake `claude`: the chosen `--model` and
+`--effort` reach the process unchanged, a refusal happens before any process starts, and a model the CLI
+itself rejects ends as a failed step with no fallback to another model. Whether the real service accepts a
+given model for an account can only be seen with a real call, which these tests never make. A future
+runtime proof would be to read the model the response reports as used (not implemented: its output shape
+was not observed here).

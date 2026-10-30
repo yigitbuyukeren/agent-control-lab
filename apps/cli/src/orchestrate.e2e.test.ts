@@ -103,7 +103,7 @@ function runCli(args: string[]) {
     if (value !== undefined && key.toLowerCase() !== 'path' && !/^(ANTHROPIC_|CLAUDE_CODE_USE_|OPENAI_|CODEX_API|NODE_EXTRA_CA|NODE_TLS|SSL_CERT|GIT_)|_PROXY$/i.test(key)) env[key] = value;
   }
   env['PATH'] = [bin, process.env['PATH'] ?? process.env['Path'] ?? ''].join(delimiter);
-  Object.assign(env, { CLAUDE_CONFIG_DIR: cfg, HOME: home, USERPROFILE: home });
+  Object.assign(env, { CLAUDE_CONFIG_DIR: cfg, HOME: home, USERPROFILE: home, ACL_CACHE_DIR: join(home, 'acl-cache') });
   const r = spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', timeout: 90_000 });
   return { code: r.status, stdout: r.stdout, stderr: r.stderr };
 }

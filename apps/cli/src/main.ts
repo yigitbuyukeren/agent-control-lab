@@ -39,6 +39,7 @@ import {
   type SelectionRequest,
   type ProcessRunner,
   type CodexRunOutcome,
+  type OutcomeStore,
   type ProviderPreference,
   type ProviderQuota,
   type RouteDecision,
@@ -52,6 +53,7 @@ import { VERSION } from '@agent-control-lab/shared';
 import { describeClaudeFacts } from './claude-facts.ts';
 import { REFUSALS, CLAUDE_REFUSALS, describeIssue, describePinned } from './format.ts';
 import { runPlanImplementReviewCommand } from './orchestrate-write.ts';
+import { formatOutcomes } from './format.ts';
 import { parseOrchestrateArgs, runOrchestrateCommand, usedModelLine } from './orchestrate.ts';
 import { claudePreflight, codexPreflight, type PreflightDeps } from './preflight.ts';
 
@@ -72,13 +74,14 @@ Commands:
                         Run Codex read-only inside a Git repository (subscription login only, no API-key fallback)
   run --provider claude --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode] [--cwd <dir>] [--timeout <seconds>]
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
-  orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive] [--step-model <plan|review>=auto|<id>] [--step-effort <plan|review>=auto|<level>]
+  orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured] [--no-record] [--step-model <plan|review>=auto|<id>] [--step-effort <plan|review>=auto|<level>]
                         Claude drafts a plan, Codex reviews it read-only; stops at the first failure (no retry, no fallback)
-  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
+  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured] [--no-record] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
                         Claude plans, Codex WRITES in that worktree only, limits are checked, Claude reviews the diff; no commit or push
   run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
+  outcomes [clear]      Show (or delete) the local pass/fail records used by --model-routing measured
   models claude         Show what can be verified about Claude models without a model call (rest: UNKNOWN)
   models check <claude|codex> <model> <effort>
                         Exit 0 supported, 1 unsupported, 3 unknown
@@ -96,6 +99,8 @@ export interface Io {
 export interface Deps extends PreflightDeps {
   readonly readStdin?: () => Promise<string>;
   readonly cacheDir?: string;
+  /** Local outcome records (`outcomes`, `--model-routing measured`); the executable supplies the file store. */
+  readonly outcomes?: OutcomeStore;
   readonly runner?: ProcessRunner;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
@@ -657,6 +662,24 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         return 2;
       }
       return args.workflow === 'plan-implement-review' ? runPlanImplementReviewCommand(args, io, deps) : runOrchestrateCommand(args, io, deps);
+    }
+    case 'outcomes': {
+      if (deps.outcomes === undefined) {
+        io.error('outcomes: no local store is available\n');
+        return 1;
+      }
+      const sub = argv[1];
+      if (sub === 'clear' && argv.length === 2) {
+        await deps.outcomes.clear();
+        io.out('outcomes: all local records deleted\n');
+        return 0;
+      }
+      if (sub !== undefined) {
+        io.error('usage: outcomes [clear]\n');
+        return 2;
+      }
+      io.out(formatOutcomes(await deps.outcomes.load(), (deps.now ?? (() => new Date()))()));
+      return 0;
     }
     case 'info':
       io.out(

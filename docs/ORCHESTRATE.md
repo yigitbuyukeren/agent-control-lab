@@ -191,3 +191,25 @@ fact. That reduces risk; it does not remove it.
 - **Manual wins:** a step with `--step-model` or `--step-effort` is left alone. Ultracode is never selected.
 - `--dry-run` prints, per step, the decision and `evidence:` lines (role, task heuristics, model list, target effort,
   models supporting it). A pinned model comes from the account's own list, so it is not an unverified choice.
+
+## Measured routing: `--model-routing measured`, `outcomes`, `--no-record`
+
+Real `orchestrate` runs write one small local record per step that ran; `--no-record` turns it off and
+`outcomes clear` deletes everything (`outcomes` shows counts). Records live in `outcomes.jsonl` in the per-user cache
+directory (`ACL_CACHE_DIR` overrides it), owner-only where the platform allows it, newest 2000 kept.
+
+- **Kept:** UTC day, step, provider, model id or `default`, effort or `default`, task type (keyword heuristic),
+  size class, outcome and whole seconds. **Never kept:** task text, model output, paths, session ids, exact times.
+- **Evidence:** `pass` is a passing `--verify-command` on a change that also passed the workspace inspection;
+  `fail` is a failed verification or a change the inspection rejected. A model's own claim (a review verdict,
+  "done") is never evidence. A completed step with no local check is `unmeasured`; provider failures are
+  `error`/`timeout`. Neither enters the success rate. Only the Codex `implement` step with a verification command
+  can produce `pass`, so Claude steps are never measurable and never routed by measurement.
+- **Decision:** among records of the same provider, step, task type and size from the last 90 days, a group
+  (model + effort, or the provider default) counts at 8+ measured outcomes. With two or more such groups, a model
+  is chosen only if its 95% Wilson interval lies entirely above every other group's. Too little data, one group,
+  overlapping intervals or the default being best keep the provider default. Duration is shown, not used.
+- **Still checked now:** the chosen model must be in the provider's current Codex list and support the recorded
+  effort, otherwise the default is kept. Manual `--step-model` / `--step-effort` always win; ultracode is never
+  selected. Nothing is run to collect data: no benchmark, no extra model call.
+- `--dry-run` prints the data amount per group, the intervals, the uncertainty and the reason.

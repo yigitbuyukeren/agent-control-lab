@@ -1,6 +1,7 @@
 import {
   claudeRegistry,
   classifyQuota,
+  chooseMeasured,
   classifyTask,
   decideEffort,
   discoverCodexModels,
@@ -12,6 +13,8 @@ import {
   type CodexModelsResult,
   type ModelCapability,
   type ModelRouting,
+  type OutcomeRecord,
+  type OutcomeStore,
   type PolicyName,
   type ProviderQuota,
   type QuotaLevel,
@@ -25,6 +28,8 @@ export interface PolicyDeps extends PreflightDeps {
   /** Claude statusLine cache directory; defaults to the standard one. */
   readonly cacheDir?: string;
   readonly now?: () => Date;
+  /** Local outcome records for `--model-routing measured`; absent means there is no data. */
+  readonly outcomes?: OutcomeStore;
 }
 
 export interface PolicyResult {
@@ -54,7 +59,9 @@ export async function applyPolicy(
   routing: ModelRouting = 'auto',
 ): Promise<PolicyResult> {
   const size = estimateTaskSize(task);
-  const kind = routing === 'adaptive' ? classifyTask(task) : 'general';
+  const kind = routing === 'auto' ? 'general' : classifyTask(task);
+  let loaded: Promise<readonly OutcomeRecord[]> | undefined;
+  const records = (): Promise<readonly OutcomeRecord[]> => (loaded ??= (deps.outcomes?.load() ?? Promise.resolve([])).catch(() => []));
   let catalog: Promise<CodexModelsResult> | undefined;
   const codexCatalog = (): Promise<CodexModelsResult> => (catalog ??= discoverCodexModels(deps.appServer));
   let quotas: Promise<ProviderQuota[]> | undefined;
@@ -70,7 +77,49 @@ export async function applyPolicy(
   for (const { step, provider } of selectionSteps(workflow)) {
     let current = requests[step];
     if (current === undefined) continue;
-    if (routing === 'adaptive') {
+    if (routing === 'measured') {
+      if (current.modelFromFlag || current.effortFromFlag) {
+        current = {
+          ...current,
+          routing: {
+            note: current.modelFromFlag ? 'not applied: the model was set manually' : 'not applied: the effort was set manually; the model stays with the provider default',
+            evidence: [],
+            pinned: false,
+          },
+        };
+      } else {
+        const decision = chooseMeasured(deps.outcomes === undefined ? [] : await records(), { provider, step, task: kind, size }, (deps.now ?? (() => new Date()))());
+        const evidence = deps.outcomes === undefined ? ['no local outcome store available', ...decision.evidence] : [...decision.evidence];
+        const choice = decision.choice;
+        let note = decision.note;
+        let applied: { model: string; effort: string } | undefined;
+        if (choice !== undefined) {
+          const list = provider === 'codex' ? await codexCatalog() : undefined;
+          const listed = list?.state === 'ok' ? list.models.find((m) => m.id === choice.model) : undefined;
+          const efforts = listed?.efforts;
+          if (provider !== 'codex') {
+            note = 'provider default kept: a Claude model cannot be shown to be accessible';
+          } else if (listed === undefined) {
+            note = `provider default kept: ${choice.model} is not in the Codex model list now`;
+          } else if (choice.effort !== 'default' && !(efforts?.status === 'known' && efforts.supported.includes(choice.effort))) {
+            note = `provider default kept: ${choice.model} is not reported to support ${choice.effort} now`;
+          } else {
+            applied = choice;
+          }
+          evidence.push(applied === undefined ? `not applied: ${note}` : `${choice.model} is listed by the provider now${choice.effort === 'default' ? '' : ` and supports ${choice.effort}`}`);
+        }
+        const next: StepRequest = {
+          ...current,
+          request: applied === undefined ? current.request : { ...current.request, model: applied.model, ...(applied.effort === 'default' ? {} : { effort: applied.effort }) },
+          routing: { note, evidence, pinned: applied !== undefined },
+        };
+        if (applied !== undefined) {
+          result[step] = { ...next, policy: { name: policy, note: 'the effort comes from the measured group, not from the policy' } };
+          continue;
+        }
+        current = next;
+      }
+    } else if (routing === 'adaptive') {
       if (current.modelFromFlag || current.effortFromFlag) {
         current = {
           ...current,
@@ -118,7 +167,7 @@ export async function applyPolicy(
       size,
       model: pinned ? { kind: 'pinned', id: current.request.model, capability } : { kind: 'auto' },
       quota,
-      ...(kind === 'sensitive' ? { sensitive: true } : {}),
+      ...(kind === 'sensitive' && routing === 'adaptive' ? { sensitive: true } : {}),
     });
     result[step] = {
       ...current,

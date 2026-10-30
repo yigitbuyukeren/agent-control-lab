@@ -1,5 +1,9 @@
 #!/usr/bin/env node
+import { resolveCacheDir } from '@agent-control-lab/core';
+import { fileOutcomeStore } from '../src/outcome-store.ts';
 import { run } from '../src/main.ts';
+
+const cacheDir = resolveCacheDir();
 
 const controller = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -16,5 +20,5 @@ process.exitCode = await run(
     out: (text) => process.stdout.write(text),
     error: (text) => process.stderr.write(text),
   },
-  { signal: controller.signal },
+  { signal: controller.signal, ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }) },
 );

@@ -11,7 +11,7 @@ export function getInfo(env: { node: string; platform: string }): LabInfo {
   return { name: 'agent-control-lab', version: VERSION, ...env };
 }
 
-export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'run' | 'orchestrate'> {
+export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'outcomes' | 'run' | 'orchestrate'> {
   const [first] = argv;
   if (first === undefined || first === 'help' || first === '--help' || first === '-h') {
     return ok('help');
@@ -24,6 +24,7 @@ export function parseCommand(argv: readonly string[]): Result<'help' | 'version'
   if (first === 'statusline-collect') return ok('statusline-collect');
   if (first === 'route') return ok('route');
   if (first === 'models') return ok('models');
+  if (first === 'outcomes') return ok('outcomes');
   if (first === 'run') return ok('run');
   if (first === 'orchestrate') return ok('orchestrate');
   return err(`unknown command: ${first}`);
@@ -43,6 +44,8 @@ export * from './selection.ts';
 export * from './step-selection.ts';
 export * from './step-policy.ts';
 export * from './step-router.ts';
+export * from './outcome-record.ts';
+export * from './outcome-stats.ts';
 export * from './process-runner.ts';
 export * from './codex-run.ts';
 export * from './git-preflight.ts';

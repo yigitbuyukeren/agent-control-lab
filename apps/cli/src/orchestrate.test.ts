@@ -2,7 +2,7 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { AppServerProcess, Exec, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
+import type { AppServerProcess, Exec, OutcomeStore, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
 import { run } from './main.ts';
 import { parseOrchestrateArgs } from './orchestrate.ts';
 
@@ -54,6 +54,7 @@ async function go(
     signal?: AbortSignal;
     onSpawn?: (spec: ProcessSpec) => void;
     appServer?: () => AppServerProcess;
+    store?: OutcomeStore;
   } = {},
 ) {
   const specs: ProcessSpec[] = [];
@@ -68,6 +69,7 @@ async function go(
       {
         exec: over.exec ?? exec(),
         appServer: over.appServer ?? modelServer,
+        ...(over.store === undefined ? {} : { outcomes: over.store }),
         cwd: dir,
         env: over.env ?? { PATH: '/bin' },
         git: () => Promise.resolve(over.git ?? 'repo'),
@@ -402,5 +404,28 @@ describe('orchestrate --model-routing', () => {
     expect(manual.out).not.toMatch(/model: gpt-b/);
     const live = await go([...risky, '--confirm', '--model-routing', 'adaptive'], { appServer: twoModels });
     for (const spec of live.specs) expect(spec.args.join(' ')).not.toContain('ultracode');
+  });
+});
+
+describe('orchestrate --model-routing measured / --no-record', () => {
+  it('parses both and defaults to recording', () => {
+    const base = ['--workflow', 'plan-review', '--task', 'x', '--dry-run'];
+    expect(parseOrchestrateArgs(base)).toMatchObject({ record: true, modelRouting: 'auto' });
+    expect(parseOrchestrateArgs([...base, '--model-routing', 'measured', '--no-record'])).toMatchObject({ record: false, modelRouting: 'measured' });
+  });
+
+  it('keeps defaults for measured when there is no data, and records only when a store is given', async () => {
+    const dry = await go([...DRY, '--model-routing', 'measured']);
+    expect(dry.out).toContain('model routing: measured');
+    expect(dry.out).toContain('provider default kept: not enough comparable data');
+    const saved: unknown[] = [];
+    const store = { load: () => Promise.resolve([]), append: (r: readonly unknown[]) => { saved.push(...r); return Promise.resolve(); }, clear: () => Promise.resolve() };
+    const live = await go([...CONFIRM], { store });
+    expect(live.code).toBe(0);
+    expect(saved).toHaveLength(2);
+    expect(JSON.stringify(saved)).not.toContain('--json');
+    expect(live.error).toContain('2 step result(s) recorded locally');
+    const none = await go([...CONFIRM]);
+    expect(none.error).not.toContain('outcomes:');
   });
 });

@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runProcess, type AppServerProcess, type Exec, type ProcessOutcome, type ProcessSpec } from '@agent-control-lab/core';
+import { runProcess, type AppServerProcess, type Exec, type OutcomeRecord, type OutcomeStore, type ProcessOutcome, type ProcessSpec } from '@agent-control-lab/core';
 import { run } from './main.ts';
 import { parseOrchestrateArgs } from './orchestrate.ts';
 
@@ -77,6 +77,7 @@ interface Scenario {
   onVerify?: (spec: ProcessSpec) => ProcessOutcome | undefined;
   claude?: ProcessOutcome[];
   signal?: AbortSignal;
+  outcomes?: OutcomeStore;
 }
 
 async function go(argv: string[], scenario: Scenario = {}) {
@@ -95,6 +96,8 @@ async function go(argv: string[], scenario: Scenario = {}) {
       claudeSettings: () => Promise.resolve({ status: 'clean' }),
       clock: (() => { let t = 0; return () => (t += 1000); })(),
       nonce: () => 'NONCE',
+      now: () => new Date('2026-10-30T12:00:00Z'),
+      ...(scenario.outcomes === undefined ? {} : { outcomes: scenario.outcomes }),
       ...(scenario.signal === undefined ? {} : { signal: scenario.signal }),
       runner: (spec) => {
         if (spec.command === 'git') return runProcess(spec);
@@ -525,5 +528,78 @@ describe('plan-implement-review: --model-routing adaptive', () => {
     const real = await go([...WRITE(), '--model-routing', 'adaptive'], { onCodex: editFile() });
     expect(real.code).toBe(0);
     for (const spec of real.specs) expect(spec.args).not.toContain('--model');
+  });
+});
+
+const memory = (initial: OutcomeRecord[] = []): OutcomeStore & { saved: OutcomeRecord[] } => {
+  const saved = [...initial];
+  return { saved, load: () => Promise.resolve([...saved]), append: (r) => { saved.push(...r); return Promise.resolve(); }, clear: () => { saved.length = 0; return Promise.resolve(); } };
+};
+const rec = (model: string, effort: string, outcome: OutcomeRecord['outcome']): OutcomeRecord => ({ v: 1, day: '2026-10-20', step: 'implement', provider: 'codex', model, effort, task: 'general', size: 'small', outcome, seconds: 20 });
+const rows = (model: string, effort: string, pass: number, fail: number): OutcomeRecord[] => [
+  ...Array.from({ length: pass }, () => rec(model, effort, 'pass')),
+  ...Array.from({ length: fail }, () => rec(model, effort, 'fail')),
+];
+
+describe('plan-implement-review: outcome records and --model-routing measured', () => {
+  it('records objective results only, without task text or paths, and not with --no-record', async () => {
+    const store = memory();
+    const ok = await go([...WRITE(), '--verify-command', 'pnpm test', '--confirm-verify'], { onCodex: editFile(), outcomes: store });
+    expect(ok.code).toBe(0);
+    expect(store.saved.map((r) => [r.step, r.outcome])).toEqual([['plan', 'unmeasured'], ['implement', 'pass'], ['review', 'unmeasured']]);
+    expect(ok.error).toContain('3 step result(s) recorded locally');
+    expect(JSON.stringify(store.saved)).not.toMatch(/json flag|a\.txt|NONCE|\/wt|acl wr/);
+    git(wt, 'reset', '--hard', '-q');
+    git(wt, 'clean', '-fdq');
+    const failed = await go([...WRITE(), '--verify-command', 'pnpm test', '--confirm-verify'], { onCodex: editFile(), onVerify: () => ({ kind: 'completed', exitCode: 1, stdout: 'x', truncated: false }), outcomes: store });
+    expect(failed.code).toBe(1);
+    expect(store.saved.filter((r) => r.step === 'implement').map((r) => r.outcome)).toEqual(['pass', 'fail']);
+    git(wt, 'reset', '--hard', '-q');
+    git(wt, 'clean', '-fdq');
+    const off = memory();
+    const quiet = await go([...WRITE(), '--no-record'], { onCodex: editFile(), outcomes: off });
+    expect(off.saved).toEqual([]);
+    expect(quiet.error).toContain('not recorded (--no-record)');
+  });
+
+  it('records nothing for a dry run and tolerates a failing store', async () => {
+    const store = memory();
+    await go([...ARGS(), '--dry-run'], { outcomes: store });
+    expect(store.saved).toEqual([]);
+    const broken: OutcomeStore = { load: () => Promise.reject(new Error('disk')), append: () => Promise.reject(new Error('disk')), clear: () => Promise.reject(new Error('disk')) };
+    const r = await go([...WRITE(), '--model-routing', 'measured'], { onCodex: editFile(), outcomes: broken });
+    expect(r.code).toBe(0);
+    expect(r.error).toContain('could not be recorded locally');
+  });
+
+  it('keeps the provider default and shows the data amount when there is not enough data', async () => {
+    const dry = await go([...ARGS(), '--dry-run', '--model-routing', 'measured'], { outcomes: memory(rows('gpt-a', 'low', 3, 0)) });
+    expect(dry.out).toContain('model routing: measured');
+    expect(dry.out).toContain('provider default kept: not enough comparable data');
+    expect(dry.out).toContain('evidence: measured outcomes (pass or fail by a local check, never the model\'s own claim): 3 in 1 group(s)');
+    expect(dry.out).toContain('gpt-a / low: 3 pass, 0 fail');
+    const none = await go([...ARGS(), '--dry-run', '--model-routing', 'measured']);
+    expect(none.out).toContain('no local outcome store available');
+  });
+
+  it('pins the clearly better listed model with its effort, starts it, and shows the uncertainty', async () => {
+    const data = [...rows('gpt-a', 'low', 20, 0), ...rows('default', 'default', 5, 10)];
+    const dry = await go([...ARGS(), '--dry-run', '--model-routing', 'measured'], { outcomes: memory(data) });
+    expect(dry.out).toContain('model: gpt-a (verified); reason: adaptive routing: gpt-a / low: measurably better');
+    expect(dry.out).toContain('uncertainty: gpt-a / low lower bound');
+    expect(dry.out).toContain('gpt-a is listed by the provider now and supports low');
+    expect(dry.out).toContain('effort: low (verified); reason: policy balanced: the effort comes from the measured group');
+    const live = await go([...WRITE(), '--model-routing', 'measured'], { onCodex: editFile(), outcomes: memory(data) });
+    expect(live.specs.find((s) => s.command === 'codex')?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=low']));
+    for (const spec of live.specs.filter((s) => s.command === 'claude')) expect(spec.args).not.toContain('--model');
+  });
+
+  it('does not pin a model the provider no longer lists or an effort it no longer supports, and manual choices win', async () => {
+    const gone = await go([...ARGS(), '--dry-run', '--model-routing', 'measured'], { outcomes: memory([...rows('gpt-z', 'low', 20, 0), ...rows('default', 'default', 5, 10)]) });
+    expect(gone.out).toContain('provider default kept: gpt-z is not in the Codex model list now');
+    const noEffort = await go([...ARGS(), '--dry-run', '--model-routing', 'measured'], { outcomes: memory([...rows('gpt-a', 'high', 20, 0), ...rows('default', 'default', 5, 10)]) });
+    expect(noEffort.out).toContain('gpt-a is not reported to support high now');
+    const manual = await go([...ARGS(), '--dry-run', '--model-routing', 'measured', '--step-model', 'implement=gpt-a'], { outcomes: memory([...rows('gpt-a', 'low', 20, 0), ...rows('default', 'default', 5, 10)]) });
+    expect(manual.out).toContain('reason: requested with --step-model implement=gpt-a');
   });
 });

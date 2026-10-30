@@ -13,6 +13,7 @@ import {
   type GitReadDeps,
   type PrepareResult,
 } from '@agent-control-lab/core';
+import { recordRun } from './outcome-recorder.ts';
 import { applyPolicy } from './policy.ts';
 import { formatResult, formatStep, policyLine, type OrchestrateArgs, type OrchestrateDeps, type OrchestrateIo } from './orchestrate.ts';
 import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
@@ -154,6 +155,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     },
   });
   io.out(formatResult(result));
+  io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, (deps.now ?? (() => new Date()))()));
   const wrote = result.steps.some((s) => s.id === 'implement' && s.status !== 'skipped' && s.status !== 'pending');
   const partial = wrote && result.status !== 'completed' ? 'The workspace may contain partial changes; nothing was reverted. ' : '';
   io.out(

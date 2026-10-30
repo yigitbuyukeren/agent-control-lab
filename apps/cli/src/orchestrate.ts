@@ -25,6 +25,7 @@ import {
   type WorkflowResult,
 } from '@agent-control-lab/core';
 import type { PolicyDeps } from './policy.ts';
+import { recordRun } from './outcome-recorder.ts';
 import { applyPolicy } from './policy.ts';
 import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
 
@@ -54,6 +55,8 @@ export interface OrchestrateArgs {
   readonly policy: PolicyName;
   /** `adaptive` lets evidence from the provider's model list pick a model for steps left on `auto`; default `auto` changes nothing. */
   readonly modelRouting?: ModelRouting;
+  /** Record what the run objectively showed (see `outcomes`); `--no-record` turns it off. */
+  readonly record?: boolean;
   /** Model and effort asked for each step (`--step-model`, `--step-effort`); `auto` keeps the provider default. */
   readonly steps: StepRequests;
   /** `plan-implement-review` only: the existing isolated worktree the implementation may write to. */
@@ -81,6 +84,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   let workspace: string | undefined;
   let policy: PolicyName = DEFAULT_POLICY;
   let modelRouting: ModelRouting = 'auto';
+  let record = true;
   const stepModels: string[] = [];
   const stepEfforts: string[] = [];
   let verifyText: string | undefined;
@@ -107,6 +111,8 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       const value = args[(i += 1)];
       if (value === undefined || !isPolicyName(value)) return `--policy must be one of: ${POLICY_NAMES.join(', ')}`;
       policy = value;
+    } else if (arg === '--no-record') {
+      record = false;
     } else if (arg === '--model-routing') {
       const value = args[(i += 1)];
       if (value === undefined || !isModelRouting(value)) return `--model-routing must be one of: ${MODEL_ROUTINGS.join(', ')}`;
@@ -155,7 +161,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
   if (confirmWrite || confirmVerify || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
     return '--workspace, --verify-command, --confirm-verify, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
@@ -163,7 +169,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';
   }
-  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, steps };
+  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, steps };
 }
 
 export function seconds(ms: number): string {
@@ -173,6 +179,9 @@ export function seconds(ms: number): string {
 export function policyLine(policy: PolicyName, quotaNote: string, routing: ModelRouting = 'auto'): string {
   return (
     `  policy: ${policy}; manual --step-model/--step-effort settings win; it only sets an effort it can verify and never picks a model or ultracode; quota ${quotaNote}\n` +
+    (routing === 'measured'
+      ? '  model routing: measured; picks a model only from local pass/fail records of comparable runs with enough data and a clear difference (a local check decides, never the model\'s own claim); otherwise the provider default is kept\n'
+      : '') +
     (routing === 'adaptive'
       ? '  model routing: adaptive; picks a Codex model only when the provider\'s own list leaves exactly one that supports the target effort, never a Claude model, never by an invented ranking; otherwise the provider default is kept\n'
       : '')
@@ -282,5 +291,6 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     },
   });
   io.out(formatResult(result));
+  io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, (deps.now ?? (() => new Date()))()));
   return result.status === 'completed' ? 0 : result.status === 'cancelled' ? 130 : 1;
 }

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process';
 import { statSync } from 'node:fs';
 import { win32 } from 'node:path';
+import { parseClaudeAuth, parseCodexAuth, type AuthProbe } from './auth.ts';
 
 export interface ProviderAdapter {
   readonly id: string;
@@ -8,6 +9,8 @@ export interface ProviderAdapter {
   /** Executable name looked up on PATH. */
   readonly command: string;
   readonly versionArgs: readonly string[];
+  /** Optional local, read-only login status probe. */
+  readonly auth?: AuthProbe;
 }
 
 export const claudeCodeAdapter: ProviderAdapter = {
@@ -15,6 +18,7 @@ export const claudeCodeAdapter: ProviderAdapter = {
   displayName: 'Claude Code',
   command: 'claude',
   versionArgs: ['--version'],
+  auth: { args: ['auth', 'status'], parse: parseClaudeAuth },
 };
 
 export const codexAdapter: ProviderAdapter = {
@@ -22,15 +26,21 @@ export const codexAdapter: ProviderAdapter = {
   displayName: 'Codex',
   command: 'codex',
   versionArgs: ['--version'],
+  auth: { args: ['login', 'status'], parse: parseCodexAuth },
 };
 
 export const builtinAdapters: readonly ProviderAdapter[] = [claudeCodeAdapter, codexAdapter];
 
 export type ExecResult =
-  | { readonly kind: 'ok'; readonly stdout: string }
+  | { readonly kind: 'ok'; readonly stdout: string; readonly stderr?: string }
   | { readonly kind: 'not-found' }
   | { readonly kind: 'timeout' }
-  | { readonly kind: 'failed'; readonly detail: string };
+  | {
+      readonly kind: 'failed';
+      readonly detail: string;
+      readonly stdout?: string;
+      readonly stderr?: string;
+    };
 
 export type Exec = (
   command: string,
@@ -120,9 +130,9 @@ export function createExec(options: ExecOptions = {}): Exec {
           windowsVerbatimArguments: verbatim,
           encoding: 'utf8',
         },
-        (error, stdout) => {
+        (error, stdout, stderr) => {
           if (error === null) {
-            resolve({ kind: 'ok', stdout });
+            resolve({ kind: 'ok', stdout, stderr });
             return;
           }
           const code: unknown = (error as { code?: unknown }).code;
@@ -131,7 +141,12 @@ export function createExec(options: ExecOptions = {}): Exec {
           } else if ((error as { killed?: boolean }).killed === true) {
             resolve({ kind: 'timeout' });
           } else {
-            resolve({ kind: 'failed', detail: error.message.split('\n')[0] ?? 'unknown error' });
+            resolve({
+              kind: 'failed',
+              detail: error.message.split('\n')[0] ?? 'unknown error',
+              stdout,
+              stderr,
+            });
           }
         },
       );

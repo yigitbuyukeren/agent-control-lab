@@ -42,4 +42,20 @@ describe('cli', () => {
     expect(out).toContain('Codex        error: boom');
     expect(out).not.toContain('not installed');
   });
+
+  it('shows auth state and method without raw output', async () => {
+    const exec: Exec = (command) =>
+      Promise.resolve(
+        command === 'claude'
+          ? {
+              kind: 'ok',
+              stdout: '{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"pro","email":"me@example.com"}',
+            }
+          : { kind: 'failed', detail: 'Command failed', stdout: 'Not logged in', stderr: '' },
+      );
+    const r = await capture(['auth-status'], exec);
+    expect(r.out).toContain('Claude Code  logged in (subscription, pro)');
+    expect(r.out).toContain('Codex        not logged in');
+    expect(r.out).not.toContain('me@example.com');
+  });
 });

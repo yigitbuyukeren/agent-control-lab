@@ -57,7 +57,7 @@ describe('snapshotWorkspace (mock git)', () => {
 
   it('builds a snapshot using read-only git with fsmonitor disabled', async () => {
     const { runner, specs } = runnerFor(base);
-    const result = await snapshotWorkspace('/ws', { runner, env: { PATH: '/bin', GIT_DIR: '/elsewhere' } });
+    const result = await snapshotWorkspace('/ws', { runner, platform: 'linux', env: { PATH: '/bin', GIT_DIR: '/elsewhere' } });
     expect(result).toEqual({
       ok: true,
       snapshot: { root: '/ws', head: SHA, branch: 'feature', linked: true, mainRoot: '/main', mainBranch: 'feature', refs: { feature: SHA, main: SHA }, dirty: ['a.ts'] },
@@ -74,11 +74,11 @@ describe('snapshotWorkspace (mock git)', () => {
 
   it('treats a detached HEAD as no branch, but any other symbolic-ref failure as unreadable', async () => {
     const detached = runnerFor({ ...base, 'symbolic-ref -q --short HEAD': { kind: 'completed', exitCode: 1, stdout: '', truncated: false } });
-    const r = await snapshotWorkspace('/ws', { runner: detached.runner });
+    const r = await snapshotWorkspace('/ws', { runner: detached.runner, platform: 'linux' });
     expect(r.ok && r.snapshot.branch).toBeUndefined();
     expect(r.ok).toBe(true);
     const broken = runnerFor({ ...base, 'symbolic-ref -q --short HEAD': { kind: 'completed', exitCode: 128, stdout: '', truncated: false } });
-    expect(await snapshotWorkspace('/ws', { runner: broken.runner })).toEqual({ ok: false });
+    expect(await snapshotWorkspace('/ws', { runner: broken.runner, platform: 'linux' })).toEqual({ ok: false });
   });
 
   it('fails closed on anything unexpected', async () => {
@@ -92,11 +92,11 @@ describe('snapshotWorkspace (mock git)', () => {
     ];
     for (const answers of cases) {
       const { runner } = runnerFor(answers);
-      const result = await snapshotWorkspace('/ws', { runner });
+      const result = await snapshotWorkspace('/ws', { runner, platform: 'linux' });
       // The last case is a plain repository: readable, but not a linked worktree.
       expect(result.ok && result.snapshot.linked).not.toBe(true);
     }
-    const unreadable = await Promise.all(cases.slice(0, 5).map((answers) => snapshotWorkspace('/ws', { runner: runnerFor(answers).runner })));
+    const unreadable = await Promise.all(cases.slice(0, 5).map((answers) => snapshotWorkspace('/ws', { runner: runnerFor(answers).runner, platform: 'linux' })));
     expect(unreadable.every((r) => !r.ok)).toBe(true);
   });
 });

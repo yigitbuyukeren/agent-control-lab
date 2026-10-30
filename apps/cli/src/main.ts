@@ -22,8 +22,15 @@ export interface Deps {
 }
 
 function formatProvider(s: ProviderStatus): string {
-  const state = s.installed ? `installed${s.version === undefined ? '' : ` ${s.version}`}` : 'not installed';
-  return `${s.displayName.padEnd(12)} ${state}${s.error === undefined ? '' : ` (${s.error})`}\n`;
+  const label = s.displayName.padEnd(12);
+  switch (s.state) {
+    case 'installed':
+      return `${label} installed${s.version === undefined ? '' : ` ${s.version}`}\n`;
+    case 'not-found':
+      return `${label} not installed\n`;
+    case 'error':
+      return `${label} error: ${s.error ?? 'unknown'}\n`;
+  }
 }
 
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {

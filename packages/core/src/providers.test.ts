@@ -27,7 +27,7 @@ describe('detectProvider', () => {
     expect(status).toEqual({
       id: 'claude-code',
       displayName: 'Claude Code',
-      installed: true,
+      state: 'installed',
       version: '2.1.4',
     });
     expect(exec).toHaveBeenCalledWith('claude', ['--version'], { timeoutMs: 1000 });
@@ -35,7 +35,7 @@ describe('detectProvider', () => {
 
   it('is installed without version when output is unparseable', async () => {
     const exec: Exec = () => Promise.resolve({ kind: 'ok', stdout: 'weird' });
-    expect(await detectProvider(codexAdapter, exec)).toMatchObject({ installed: true });
+    expect(await detectProvider(codexAdapter, exec)).toMatchObject({ state: 'installed' });
   });
 
   it('handles not-found, timeout, failure and thrown errors', async () => {
@@ -43,12 +43,12 @@ describe('detectProvider', () => {
     expect(await run({ kind: 'not-found' })).toEqual({
       id: 'codex',
       displayName: 'Codex',
-      installed: false,
+      state: 'not-found',
     });
-    expect(await run({ kind: 'timeout' })).toMatchObject({ installed: false, error: 'timed out after 5000 ms' });
-    expect(await run({ kind: 'failed', detail: 'boom' })).toMatchObject({ installed: false, error: 'boom' });
+    expect(await run({ kind: 'timeout' })).toMatchObject({ state: 'error', error: 'timed out after 5000 ms' });
+    expect(await run({ kind: 'failed', detail: 'boom' })).toMatchObject({ state: 'error', error: 'boom' });
     const thrown = await detectProvider(codexAdapter, () => Promise.reject(new Error('spawn broke')));
-    expect(thrown).toMatchObject({ installed: false, error: 'spawn broke' });
+    expect(thrown).toMatchObject({ state: 'error', error: 'spawn broke' });
   });
 });
 
@@ -57,9 +57,9 @@ describe('detectProviders', () => {
     const exec: Exec = (command) =>
       Promise.resolve(command === 'claude' ? { kind: 'ok', stdout: '1.0.0' } : { kind: 'not-found' });
     const statuses = await detectProviders([claudeCodeAdapter, codexAdapter], exec);
-    expect(statuses.map((s) => [s.id, s.installed])).toEqual([
-      ['claude-code', true],
-      ['codex', false],
+    expect(statuses.map((s) => [s.id, s.state])).toEqual([
+      ['claude-code', 'installed'],
+      ['codex', 'not-found'],
     ]);
   });
 });

@@ -141,10 +141,13 @@ export function createExec(options: ExecOptions = {}): Exec {
 
 export const defaultExec: Exec = createExec();
 
+export type ProviderState = 'installed' | 'not-found' | 'error';
+
 export interface ProviderStatus {
   readonly id: string;
   readonly displayName: string;
-  readonly installed: boolean;
+  /** `error` means the check itself failed, so installation is unknown. */
+  readonly state: ProviderState;
   readonly version?: string;
   readonly error?: string;
 }
@@ -166,19 +169,19 @@ export async function detectProvider(
     result = await exec(adapter.command, adapter.versionArgs, { timeoutMs });
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
-    return { ...base, installed: false, error: detail };
+    return { ...base, state: 'error', error: detail };
   }
   switch (result.kind) {
     case 'ok': {
       const version = parseVersion(result.stdout);
-      return version === undefined ? { ...base, installed: true } : { ...base, installed: true, version };
+      return version === undefined ? { ...base, state: 'installed' } : { ...base, state: 'installed', version };
     }
     case 'not-found':
-      return { ...base, installed: false };
+      return { ...base, state: 'not-found' };
     case 'timeout':
-      return { ...base, installed: false, error: `timed out after ${String(timeoutMs)} ms` };
+      return { ...base, state: 'error', error: `timed out after ${String(timeoutMs)} ms` };
     case 'failed':
-      return { ...base, installed: false, error: result.detail };
+      return { ...base, state: 'error', error: result.detail };
   }
 }
 

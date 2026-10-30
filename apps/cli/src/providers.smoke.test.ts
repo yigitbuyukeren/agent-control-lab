@@ -38,11 +38,12 @@ afterAll(() => {
 });
 
 describe('providers smoke (fake CLI shims on PATH)', () => {
-  it('detects installed shims and reports a failing --version without calling it not installed', () => {
+  it('detects installed shims and reports a failing --version as an error', () => {
     shim('claude', '2.1.4 (fake)', 0);
     shim('codex', '', 1);
     const out = providers();
     expect(out).toContain('Claude Code  installed 2.1.4');
-    expect(out).toMatch(/Codex\s+not installed \(Command failed/);
+    expect(out).not.toContain('not installed');
+    expect(out).toMatch(/Codex\s+error: Command failed/);
   });
 });

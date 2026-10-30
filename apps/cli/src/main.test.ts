@@ -33,4 +33,13 @@ describe('cli', () => {
     expect(r.out).toContain('Claude Code  installed 2.1.4');
     expect(r.out).toContain('Codex        not installed');
   });
+
+  it('shows timeouts and failures as errors, not as not installed', async () => {
+    const exec: Exec = (command) =>
+      Promise.resolve(command === 'claude' ? { kind: 'timeout' } : { kind: 'failed', detail: 'boom' });
+    const { out } = await capture(['providers'], exec);
+    expect(out).toContain('Claude Code  error: timed out after 5000 ms');
+    expect(out).toContain('Codex        error: boom');
+    expect(out).not.toContain('not installed');
+  });
 });

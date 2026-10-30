@@ -81,4 +81,33 @@ describe('cli', () => {
     expect(out).toContain('5h window (primary): 12% used, resets 2027-01-15T08:00:00.000Z');
     expect(out).toContain('secondary: unknown');
   });
+
+  it('quota claude --stdin shows only usage and reset times', async () => {
+    const json = JSON.stringify({
+      session_id: 'secret-session',
+      workspace: { current_dir: '/home/me' },
+      rate_limits: {
+        five_hour: { used_percentage: 23.5, resets_at: 1800000000, token: 'sk-secret' },
+        seven_day: { used_percentage: 'bad' },
+      },
+    });
+    let out = '';
+    const code = await run(
+      ['quota', 'claude', '--stdin'],
+      { out: (t) => (out += t), error: () => undefined },
+      { readStdin: () => Promise.resolve(json) },
+    );
+    expect(code).toBe(0);
+    expect(out).toContain('5h window: 23.5% used, resets 2027-01-15T08:00:00.000Z');
+    expect(out).toContain('7d window: unknown');
+    expect(out).not.toMatch(/secret|home/);
+  });
+
+  it('quota claude requires --stdin and reports invalid input as unknown', async () => {
+    expect((await capture(['quota', 'claude'])).code).toBe(2);
+    expect((await capture(['quota', 'nope'])).code).toBe(2);
+    let out = '';
+    await run(['quota', 'claude', '--stdin'], { out: (t) => (out += t), error: () => undefined }, { readStdin: () => Promise.resolve('not json') });
+    expect(out).toContain('Claude Code quota: unknown');
+  });
 });

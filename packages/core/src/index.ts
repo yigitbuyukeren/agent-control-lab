@@ -27,3 +27,4 @@ export function parseCommand(argv: readonly string[]): Result<'help' | 'version'
 export * from './providers.ts';
 export * from './auth.ts';
 export * from './quota.ts';
+export * from './claude-quota.ts';

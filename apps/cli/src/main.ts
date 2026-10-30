@@ -4,10 +4,12 @@ import {
   detectAuthStatuses,
   detectProviders,
   getInfo,
+  parseClaudeStatusLine,
   parseCommand,
   readCodexQuota,
   type AppServerSpawn,
   type AuthStatus,
+  type ClaudeQuotaStatus,
   type Exec,
   type ProviderStatus,
   type QuotaStatus,
@@ -25,6 +27,7 @@ Commands:
   info      Print runtime information
   providers Show installed AI CLI providers (local --version check only)
   quota     Show Codex rate-limit usage (read-only app-server query)
+  quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
   auth-status Show provider login state and method (local status commands only)
 `;
 
@@ -36,6 +39,7 @@ export interface Io {
 export interface Deps {
   readonly exec?: Exec;
   readonly appServer?: AppServerSpawn;
+  readonly readStdin?: () => Promise<string>;
 }
 
 function formatProvider(s: ProviderStatus): string {
@@ -96,6 +100,32 @@ function formatQuota(q: QuotaStatus): string {
   }
 }
 
+const MAX_STDIN_BYTES = 1024 * 1024;
+
+async function readProcessStdin(): Promise<string> {
+  if (process.stdin.isTTY) return '';
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of process.stdin) {
+    const buffer = Buffer.from(chunk as Uint8Array);
+    size += buffer.length;
+    if (size > MAX_STDIN_BYTES) return '';
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+function formatClaudeLine(label: string, window: QuotaWindow | undefined): string {
+  if (window === undefined) return `  ${label}: unknown\n`;
+  const used = window.usedPercent === undefined ? 'usage unknown' : `${String(window.usedPercent)}% used`;
+  const reset = window.resetsAt === undefined ? 'reset unknown' : `resets ${window.resetsAt}`;
+  return `  ${label}: ${used}, ${reset}\n`;
+}
+
+function formatClaudeQuota(q: ClaudeQuotaStatus): string {
+  return `Claude Code quota: ${q.state === 'ok' ? 'ok' : 'unknown'}\n${formatClaudeLine('5h window', q.fiveHour)}${formatClaudeLine('7d window', q.sevenDay)}`;
+}
+
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   const parsed = parseCommand(argv);
   if (!parsed.ok) {
@@ -120,6 +150,20 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       return 0;
     }
     case 'quota': {
+      const [, target, flag] = argv;
+      if (target === 'claude') {
+        if (flag !== '--stdin') {
+          io.error('usage: agent-control-lab quota claude --stdin\n');
+          return 2;
+        }
+        const text = await (deps.readStdin ?? readProcessStdin)();
+        io.out(formatClaudeQuota(parseClaudeStatusLine(text)));
+        return 0;
+      }
+      if (target !== undefined && target !== 'codex') {
+        io.error(`unknown quota target: ${target}\n`);
+        return 2;
+      }
       const quota = await readCodexQuota(deps.appServer);
       io.out(formatQuota(quota));
       return 0;

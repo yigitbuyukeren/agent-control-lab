@@ -55,4 +55,19 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
     expect(out).toContain('Codex        not logged in');
     expect(out).not.toContain('me@example.com');
   });
+
+  it('quota claude --stdin reads piped statusLine JSON on this platform', () => {
+    const input = JSON.stringify({
+      cwd: 'secret-dir',
+      rate_limits: { five_hour: { used_percentage: 10, resets_at: 1800000000 }, seven_day: { used_percentage: 55, resets_at: 1800500000 } },
+    });
+    const out = execFileSync(process.execPath, [bin, 'quota', 'claude', '--stdin'], {
+      input,
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+    expect(out).toContain('5h window: 10% used, resets 2027-01-15T08:00:00.000Z');
+    expect(out).toContain('7d window: 55% used');
+    expect(out).not.toContain('secret');
+  });
 });

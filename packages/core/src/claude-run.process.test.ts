@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -13,12 +13,14 @@ let work = '';
 // Fake `claude`: reports its argv (including the empty `--tools ""` value), stdin and env.
 const FAKE = `
 const fs = require('node:fs');
-fs.writeFileSync(require('node:path').join(process.cwd(), 'fake.pid'), String(process.pid));
 let stdin = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
-  if (stdin === 'HANG') return;
+  if (stdin.startsWith('HANG:')) {
+    fs.writeFileSync(stdin.slice(5), String(process.pid));
+    return;
+  }
   const leaked = Object.keys(process.env).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_|OPENAI_)/i.test(k) && k !== 'CLAUDE_CONFIG_DIR');
   console.log(JSON.stringify({ args: process.argv.slice(2), stdin, cwd: process.cwd(), leaked }));
   process.exit(0);
@@ -73,9 +75,8 @@ describe('runClaude through a real fake claude (cmd shim on Windows)', () => {
 
   it('times out a hung claude and kills it', async () => {
     // The cleaned environment carries no test switches, so the fake hangs on a stdin marker.
-    const hangDir = mkdirSync(join(work, 'hang'), { recursive: true }) ?? join(work, 'hang');
-    const pidFile = join(hangDir, 'fake.pid');
-    const outcome = await runClaude({ task: 'HANG', cwd: hangDir, selection, timeoutMs: 5000 }, { env: env() });
+    const pidFile = join(work, 'claude-hang.pid');
+    const outcome = await runClaude({ task: `HANG:${pidFile}`, cwd: work, selection, timeoutMs: 5000 }, { env: env() });
     expect(outcome).toEqual({ kind: 'timeout' });
     const pid = Number(readFileSync(pidFile, 'utf8'));
     let dead = false;
@@ -92,10 +93,10 @@ describe('runClaude through a real fake claude (cmd shim on Windows)', () => {
 
   it('cancels a hung claude through the abort signal', async () => {
     const controller = new AbortController();
-    const cancelDir = mkdirSync(join(work, 'cancel'), { recursive: true }) ?? join(work, 'cancel');
-    const pidFile = join(cancelDir, 'fake.pid');
-    const running = runClaude({ task: 'HANG', cwd: cancelDir, selection, timeoutMs: 30_000, signal: controller.signal }, { env: env() });
-    for (let i = 0; i < 80 && !existsSync(pidFile); i += 1) await new Promise((r) => setTimeout(r, 50));
+    const pidFile = join(work, 'claude-cancel.pid');
+    const running = runClaude({ task: `HANG:${pidFile}`, cwd: work, selection, timeoutMs: 30_000, signal: controller.signal }, { env: env() });
+    for (let i = 0; i < 200 && !existsSync(pidFile); i += 1) await new Promise((r) => setTimeout(r, 50));
+    expect(existsSync(pidFile)).toBe(true);
     controller.abort();
     expect(await running).toEqual({ kind: 'cancelled' });
   });

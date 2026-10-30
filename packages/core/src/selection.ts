@@ -159,7 +159,8 @@ export function resolveSelection(
 
   // Mode: ultracode is a separate, explicit-only working mode, never an effort.
   if (request.mode === 'ultracode') {
-    const support = modeSupport(modelCapability);
+    // Codex has no ultracode mode at all: that is a definite incompatibility, not an unknown.
+    const support: ModeSupport = provider === 'codex' ? 'unsupported' : modeSupport(modelCapability);
     issues.push(
       support === 'unsupported'
         ? { code: 'mode-unsupported', blocking: true, mode: 'ultracode' }

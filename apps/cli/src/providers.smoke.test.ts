@@ -159,4 +159,30 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
       }),
     ).toThrow(/use --mode ultracode/);
   });
+
+  it('run refuses without --confirm and when codex is absent, never starting a model call', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'acl-smoke-run-'));
+    try {
+      const env: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined && key.toLowerCase() !== 'path') env[key] = value;
+      }
+      env['PATH'] = join(cache, 'no-binaries-here');
+      const attempt = (extra: string[]) => {
+        try {
+          execFileSync(process.execPath, [bin, 'run', '--provider', 'codex', '--task', 'x', ...extra], { env, encoding: 'utf8', stdio: 'pipe', timeout: 20000 });
+          return { code: 0, stderr: '' };
+        } catch (error) {
+          const e = error as { status: number; stderr: string };
+          return { code: e.status, stderr: e.stderr };
+        }
+      };
+      expect(attempt([])).toMatchObject({ code: 2 });
+      const missing = attempt(['--confirm']);
+      expect(missing.code).toBe(1);
+      expect(missing.stderr).toContain('run refused: codex is not installed');
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
+  });
 });

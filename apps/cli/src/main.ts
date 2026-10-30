@@ -7,12 +7,19 @@ import {
   parseClaudeStatusLine,
   parseCommand,
   CLAUDE_EFFORT_LEVELS,
+  DEFAULT_RUN_TIMEOUT_MS,
   DEFAULT_REQUEST,
+  MAX_RUN_TIMEOUT_MS,
   ROUTE_PROVIDERS,
   TASK_KINDS,
   asEffortLevel,
   availabilityFromAuth,
   checkEffort,
+  codexAdapter,
+  detectAuth,
+  planCodexRun,
+  runCodex,
+  validateWorkingDir,
   claudeRegistry,
   discoverCodexModels,
   isDefaultRequest,
@@ -33,6 +40,9 @@ import {
   type SelectionIssue,
   type SelectionRequest,
   type Pinned,
+  type ProcessRunner,
+  type RefusalReason,
+  type CodexRunOutcome,
   type ProviderPreference,
   type ProviderQuota,
   type RouteDecision,
@@ -58,6 +68,8 @@ Commands:
   quota all             Show Claude (local cache) and Codex (app-server) limits together
   quota claude          Show Claude Code limits from the local statusLine cache
   quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
+  run --provider codex --task "<text>" --confirm [--model auto|<id>] [--effort auto|<level>] [--cwd <dir>] [--timeout <seconds>]
+                        Run Codex read-only (subscription login required, no API-key fallback)
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
   models check <claude|codex> <model> <effort>
                         Exit 0 supported, 1 unsupported, 3 unknown
@@ -77,6 +89,9 @@ export interface Deps {
   readonly appServer?: AppServerSpawn;
   readonly readStdin?: () => Promise<string>;
   readonly cacheDir?: string;
+  readonly runner?: ProcessRunner;
+  readonly signal?: AbortSignal;
+  readonly cwd?: string;
   readonly now?: () => Date;
 }
 
@@ -191,6 +206,17 @@ interface RouteArgs {
 
 const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
+/** Returns an error message, or undefined when the model id is acceptable. */
+function checkModelArg(value: string | undefined): string | undefined {
+  return value !== undefined && MODEL_ID_PATTERN.test(value) ? undefined : '--model must be auto or a model id';
+}
+
+function checkEffortArg(value: string | undefined): string | undefined {
+  if (value === 'ultracode') return 'ultracode is a work mode, not an effort: use --mode ultracode';
+  if (value === 'auto' || (value !== undefined && asEffortLevel(value) !== undefined)) return undefined;
+  return '--effort must be auto or a level such as low, medium, high, xhigh, max, ultra';
+}
+
 function parseRouteArgs(args: readonly string[]): RouteArgs | string {
   let task: TaskKind | undefined;
   let preference: ProviderPreference = 'auto';
@@ -214,14 +240,13 @@ function parseRouteArgs(args: readonly string[]): RouteArgs | string {
       preference = choice;
     } else if (arg === '--model') {
       const value = args[(i += 1)];
-      if (value === undefined || !MODEL_ID_PATTERN.test(value)) return '--model must be auto or a model id';
+      const problem = checkModelArg(value);
+      if (problem !== undefined || value === undefined) return problem ?? '--model must be auto or a model id';
       model = value;
     } else if (arg === '--effort') {
       const value = args[(i += 1)];
-      if (value === 'ultracode') return 'ultracode is a work mode, not an effort: use --mode ultracode';
-      if (value !== 'auto' && (value === undefined || asEffortLevel(value) === undefined)) {
-        return '--effort must be auto or a level such as low, medium, high, xhigh, max, ultra';
-      }
+      const problem = checkEffortArg(value);
+      if (problem !== undefined || value === undefined) return problem ?? '--effort must be auto or a level';
       effort = value;
     } else if (arg === '--mode') {
       const value = args[(i += 1)];
@@ -311,6 +336,81 @@ function formatEffortCheck(check: EffortCheck): string {
   if (check.status === 'unsupported') return `unsupported (supported: ${check.supported.join(', ')})\n`;
   return `unknown (${check.reason})\n`;
 }
+
+interface RunArgs {
+  readonly task: string;
+  readonly request: SelectionRequest;
+  readonly cwd: string | undefined;
+  readonly timeoutMs: number;
+}
+
+function parseRunArgs(args: readonly string[]): RunArgs | string {
+  let provider: string | undefined;
+  let task: string | undefined;
+  let confirm = false;
+  let cwd: string | undefined;
+  let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
+  let model: string = DEFAULT_REQUEST.model;
+  let effort: string = DEFAULT_REQUEST.effort;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--confirm') {
+      confirm = true;
+    } else if (arg === '--provider') {
+      provider = args[(i += 1)];
+    } else if (arg === '--task') {
+      task = args[(i += 1)];
+    } else if (arg === '--cwd') {
+      cwd = args[(i += 1)];
+      if (cwd === undefined || cwd === '') return '--cwd needs a directory';
+    } else if (arg === '--timeout') {
+      const seconds = Number(args[(i += 1)]);
+      if (!Number.isInteger(seconds) || seconds < 1 || seconds * 1000 > MAX_RUN_TIMEOUT_MS) {
+        return `--timeout must be 1..${String(MAX_RUN_TIMEOUT_MS / 1000)} seconds`;
+      }
+      timeoutMs = seconds * 1000;
+    } else if (arg === '--model') {
+      const value = args[(i += 1)];
+      const problem = checkModelArg(value);
+      if (problem !== undefined || value === undefined) return problem ?? '--model must be auto or a model id';
+      model = value;
+    } else if (arg === '--effort') {
+      const value = args[(i += 1)];
+      const problem = checkEffortArg(value);
+      if (problem !== undefined || value === undefined) return problem ?? '--effort must be auto or a level';
+      effort = value;
+    } else if (arg === '--mode') {
+      // Codex has no ultracode mode, so the only run mode is normal.
+      const value = args[(i += 1)];
+      if (value === 'ultracode') return 'ultracode is not supported for Codex';
+      if (value !== 'normal') return '--mode must be normal';
+    } else {
+      return `unknown run option: ${arg ?? ''}`;
+    }
+  }
+  if (provider !== 'codex') return 'only --provider codex is supported';
+  if (task === undefined) return '--task "<text>" is required';
+  if (!confirm) return 'run needs --confirm: it starts a real, billed Codex session';
+  return { task, request: { model, effort, mode: 'normal' }, cwd, timeoutMs };
+}
+
+const REFUSALS: Record<RefusalReason, string> = {
+  'task-invalid': 'the task text is empty, too long or invalid',
+  'codex-not-installed': 'codex is not installed',
+  'not-logged-in': 'codex is not logged in',
+  'login-state-unknown': 'codex login state could not be determined',
+  'api-key-login': 'codex is logged in with an API key; only a subscription login is allowed',
+  'login-method-unknown': 'codex login method is not a verified subscription login',
+  'selection-blocked': 'the model/effort selection is blocked',
+};
+
+const RUN_FAILURES: Record<Exclude<CodexRunOutcome['kind'], 'completed'>, string> = {
+  failed: 'codex run failed',
+  timeout: 'codex run timed out',
+  cancelled: 'codex run cancelled',
+  'not-installed': 'codex is not installed',
+  'spawn-failed': 'codex could not be started',
+};
 
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   const parsed = parseCommand(argv);
@@ -438,6 +538,45 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       const check = checkEffort(registry, provider, modelId, effort);
       io.out(formatEffortCheck(check));
       return check.status === 'supported' ? 0 : check.status === 'unsupported' ? 1 : 3;
+    }
+    case 'run': {
+      const args = parseRunArgs(argv.slice(1));
+      if (typeof args === 'string') {
+        io.error(`${args}\n`);
+        return 2;
+      }
+      const cwd = await validateWorkingDir(args.cwd ?? deps.cwd ?? process.cwd());
+      if (cwd === undefined) {
+        io.error('run refused: the working directory does not exist\n');
+        return 1;
+      }
+      const auth = await detectAuth(codexAdapter, deps.exec ?? defaultExec);
+      const pinned = args.request.model !== 'auto' || args.request.effort !== 'auto';
+      const codex: CodexModelsResult = pinned
+        ? await discoverCodexModels(deps.appServer)
+        : { state: 'ok', models: [] };
+      const selection = resolveSelection('codex', args.request, { claude: claudeRegistry, codex });
+      const plan = planCodexRun({ task: args.task, auth, selection });
+      if (!plan.ok) {
+        io.error(`run refused: ${REFUSALS[plan.reason]}\n${plan.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join('')}`);
+        return 1;
+      }
+      io.error(
+        `running codex (read-only sandbox, subscription login) in ${cwd}\n` +
+          `  model: ${describePinned(selection.model)}\n  effort: ${describePinned(selection.effort)}\n` +
+          plan.warnings.map((i) => `  warning: ${describeIssue(i)}\n`).join(''),
+      );
+      const outcome = await runCodex(
+        { task: args.task, cwd, selection, timeoutMs: args.timeoutMs, ...(deps.signal === undefined ? {} : { signal: deps.signal }) },
+        deps.runner === undefined ? {} : { runner: deps.runner },
+      );
+      if (outcome.kind !== 'completed') {
+        io.error(`${RUN_FAILURES[outcome.kind]}\n`);
+        return outcome.kind === 'cancelled' ? 130 : 1;
+      }
+      io.out(outcome.output.endsWith('\n') ? outcome.output : `${outcome.output}\n`);
+      if (outcome.truncated) io.error('output was truncated\n');
+      return 0;
     }
     case 'info':
       io.out(

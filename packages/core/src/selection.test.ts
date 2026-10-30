@@ -127,6 +127,22 @@ describe('ultracode is a separate, explicit mode', () => {
   });
 });
 
+describe('ultracode on Codex is a definite incompatibility', () => {
+  it('blocks it for every Codex request shape, without any catalog', () => {
+    for (const request of [req({ mode: 'ultracode' }), req({ model: 'gpt-a', mode: 'ultracode' }), req({ model: 'nope', effort: 'ultra', mode: 'ultracode' })]) {
+      for (const codex of [live, { state: 'error', error: 'timed out' } as const, { state: 'not-installed' } as const]) {
+        const s = resolveSelection('codex', request, catalog(codex));
+        expect(s.issues).toContainEqual({ code: 'mode-unsupported', blocking: true, mode: 'ultracode' });
+        expect(s).toMatchObject({ blocked: true, manualApprovalRequired: true, mode: 'ultracode' });
+      }
+    }
+  });
+
+  it('does not block normal mode on Codex', () => {
+    expect(resolveSelection('codex', req({ model: 'gpt-a' }), catalog()).blocked).toBe(false);
+  });
+});
+
 describe('provider preservation and purity', () => {
   it('echoes the chosen provider and does not mutate the catalog', () => {
     const frozen = Object.freeze(catalog());

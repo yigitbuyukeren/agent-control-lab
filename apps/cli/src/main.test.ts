@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AppServerProcess, Exec } from '@agent-control-lab/core';
+import type { AppServerProcess, Exec, ProcessOutcome, ProcessSpec } from '@agent-control-lab/core';
 import { run, type Deps } from './main.ts';
 
 async function capture(argv: string[], exec?: Exec) {
@@ -112,6 +112,154 @@ describe('cli', () => {
     let out = '';
     await run(['quota', 'claude', '--stdin'], { out: (t) => (out += t), error: () => undefined }, { readStdin: () => Promise.resolve('not json') });
     expect(out).toContain('Claude Code quota: unknown');
+  });
+
+  describe('run --provider codex', () => {
+    const loginExec = (output: string, kind: 'ok' | 'failed' | 'not-found' = 'ok'): Exec => () =>
+      Promise.resolve(
+        kind === 'ok' ? { kind: 'ok', stdout: output } : kind === 'failed' ? { kind: 'failed', detail: 'x', stdout: output, stderr: '' } : { kind: 'not-found' },
+      );
+    const modelServer = (mode: 'ok' | 'fail' = 'ok') => (): AppServerProcess => {
+      let lineCb: (line: string) => void = () => undefined;
+      return {
+        send: (line) => {
+          const m = JSON.parse(line) as { id?: number; method: string };
+          if (m.id === undefined) return;
+          const reply =
+            m.method === 'model/list' && mode === 'fail'
+              ? { error: { code: 1, message: 'secret' } }
+              : m.method === 'model/list'
+                ? { result: { data: [{ model: 'gpt-a', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] }], nextCursor: null } }
+                : { result: {} };
+          queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, ...reply })); });
+        },
+        onLine: (cb) => (lineCb = cb),
+        onExit: () => undefined,
+        kill: () => Promise.resolve(),
+      };
+    };
+    const START = ['run', '--provider', 'codex', '--task', 'summarize the repo', '--confirm'];
+
+    async function go(argv: string[], over: { exec?: Exec; outcome?: ProcessOutcome; models?: 'ok' | 'fail' } = {}) {
+      const specs: ProcessSpec[] = [];
+      let out = '';
+      let error = '';
+      const dir = mkdtempSync(join(tmpdir(), 'acl-run-'));
+      try {
+        const code = await run(
+          argv.map((a) => (a === '@cwd' ? dir : a)),
+          { out: (t) => (out += t), error: (t) => (error += t) },
+          {
+            exec: over.exec ?? loginExec('Logged in using ChatGPT'),
+            appServer: modelServer(over.models),
+            cwd: dir,
+            runner: (spec) => {
+              specs.push(spec);
+              return Promise.resolve(over.outcome ?? { kind: 'completed', exitCode: 0, stdout: 'answer\n', truncated: false });
+            },
+          },
+        );
+        return { code, out, error, specs, dir };
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    it('runs read-only with an explicit cwd and prints only the answer on stdout', async () => {
+      const r = await go(START);
+      expect(r.code).toBe(0);
+      expect(r.out).toBe('answer\n');
+      expect(r.error).toContain('read-only sandbox, subscription login');
+      expect(r.error).toContain('model: provider-default');
+      expect(r.specs).toHaveLength(1);
+      expect(r.specs[0]).toMatchObject({ command: 'codex', input: 'summarize the repo' });
+      expect(r.specs[0]?.args).toEqual(['exec', '-s', 'read-only', '--color', 'never', '--ephemeral', '-']);
+      expect(r.specs[0]?.cwd).toBeTruthy();
+    });
+
+    it('verifies a pinned model and the ultra effort, passing both through', async () => {
+      const r = await go([...START, '--model', 'gpt-a', '--effort', 'ultra']);
+      expect(r.code).toBe(0);
+      expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=ultra']));
+      expect(r.error).toContain('model: gpt-a (verified)');
+    });
+
+    it('refuses without --confirm, for other providers and for bad options, never spawning', async () => {
+      for (const argv of [
+        START.filter((a) => a !== '--confirm'),
+        ['run', '--provider', 'claude', '--task', 'x', '--confirm'],
+        ['run', '--task', 'x', '--confirm'],
+        ['run', '--provider', 'codex', '--confirm'],
+        [...START, '--mode', 'ultracode'],
+        [...START, '--effort', 'ultracode'],
+        [...START, '--timeout', '0'],
+        [...START, '--timeout', '999999'],
+        [...START, '--model', 'bad id!'],
+        [...START, '--sandbox', 'danger-full-access'],
+      ]) {
+        const r = await go(argv);
+        expect(r.code).toBe(2);
+        expect(r.specs).toHaveLength(0);
+        expect(r.out).toBe('');
+      }
+    });
+
+    it('refuses API-key, logged-out, missing and unknown logins without any fallback', async () => {
+      const cases: [Exec, string][] = [
+        [loginExec('Logged in using an API key - sk-abc***'), 'codex is logged in with an API key; only a subscription login is allowed'],
+        [loginExec('Not logged in', 'failed'), 'codex is not logged in'],
+        [loginExec('', 'not-found'), 'codex is not installed'],
+        [loginExec('something new'), 'codex login state could not be determined'],
+      ];
+      for (const [exec, message] of cases) {
+        const r = await go(START, { exec });
+        expect(r.code).toBe(1);
+        expect(r.error).toContain(`run refused: ${message}`);
+        expect(r.error).not.toContain('sk-abc');
+        expect(r.specs).toHaveLength(0);
+      }
+    });
+
+    it('applies blocking selection rules but only warns on unverifiable ones', async () => {
+      const missing = await go([...START, '--model', 'gpt-zzz']);
+      expect(missing.code).toBe(1);
+      expect(missing.error).toContain('issue: model-not-listed [blocking] gpt-zzz');
+      expect(missing.specs).toHaveLength(0);
+      const unsupported = await go([...START, '--model', 'gpt-a', '--effort', 'max']);
+      expect(unsupported.error).toContain('effort-unsupported [blocking]');
+      expect(unsupported.specs).toHaveLength(0);
+      const down = await go([...START, '--model', 'gpt-a'], { models: 'fail' });
+      expect(down.code).toBe(0);
+      expect(down.error).toContain('warning: model-discovery-failed');
+      expect(down.error).not.toContain('secret');
+      expect(down.specs).toHaveLength(1);
+    });
+
+    it('uses fixed messages for runner failures and never shows raw output', async () => {
+      const cases: [ProcessOutcome, string, number][] = [
+        [{ kind: 'completed', exitCode: 1, stdout: 'sk-secret leak', truncated: false }, 'codex run failed', 1],
+        [{ kind: 'timeout' }, 'codex run timed out', 1],
+        [{ kind: 'cancelled' }, 'codex run cancelled', 130],
+        [{ kind: 'not-found' }, 'codex is not installed', 1],
+        [{ kind: 'spawn-failed' }, 'codex could not be started', 1],
+      ];
+      for (const [outcome, message, code] of cases) {
+        const r = await go(START, { outcome });
+        expect(r.code).toBe(code);
+        expect(r.error).toContain(message);
+        expect(r.out).toBe('');
+        expect(r.error).not.toContain('secret');
+      }
+    });
+
+    it('reports truncation and rejects a missing working directory', async () => {
+      const t = await go(START, { outcome: { kind: 'completed', exitCode: 0, stdout: 'x', truncated: true } });
+      expect(t.error).toContain('output was truncated');
+      const bad = await go([...START, '--cwd', join(tmpdir(), 'acl-does-not-exist-xyz')]);
+      expect(bad.code).toBe(1);
+      expect(bad.error).toContain('working directory does not exist');
+      expect(bad.specs).toHaveLength(0);
+    });
   });
 
   describe('models', () => {
@@ -284,6 +432,13 @@ describe('cli', () => {
         expect(r.code).toBe(2);
         expect(r.out).toBe('');
       }
+    });
+
+    it('blocks ultracode for Codex as a definite incompatibility', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'review', '--mode', 'ultracode'], 20);
+      expect(r.out).toContain('recommended: codex');
+      expect(r.out).toContain('issue: mode-unsupported [blocking] ultracode');
+      expect(r.out).toContain('manual-approval: required');
     });
 
     it('requires --dry-run and a valid task and preference', async () => {

@@ -19,6 +19,6 @@ export default tseslint.config(
   },
   {
     files: ['**/*.js'],
-    languageOptions: { globals: { process: 'readonly' } },
+    languageOptions: { globals: { process: 'readonly', AbortController: 'readonly' } },
   },
 );

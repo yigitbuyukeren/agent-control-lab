@@ -81,7 +81,7 @@ describe('parseCodexModel', () => {
       source: 'discovered',
       access: 'listed',
       efforts: { status: 'known', supported: ['low', 'medium', 'high'], default: 'medium' },
-      modes: { ultracode: 'unknown' },
+      modes: { ultracode: 'unsupported' },
     });
     expect(JSON.stringify(parsed)).not.toContain('secret');
   });

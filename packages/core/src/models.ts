@@ -108,7 +108,7 @@ export function parseCodexModel(value: unknown): ModelCapability | undefined {
     source: 'discovered',
     access: 'listed',
     efforts,
-    modes: UNKNOWN_MODES,
+    modes: { ultracode: 'unsupported' },
   };
 }
 

@@ -11,12 +11,15 @@ export function getInfo(env: { node: string; platform: string }): LabInfo {
   return { name: 'agent-control-lab', version: VERSION, ...env };
 }
 
-export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info'> {
+export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers'> {
   const [first] = argv;
   if (first === undefined || first === 'help' || first === '--help' || first === '-h') {
     return ok('help');
   }
   if (first === 'version' || first === '--version' || first === '-v') return ok('version');
   if (first === 'info') return ok('info');
+  if (first === 'providers') return ok('providers');
   return err(`unknown command: ${first}`);
 }
+
+export * from './providers.ts';

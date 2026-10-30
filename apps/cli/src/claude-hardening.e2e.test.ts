@@ -29,7 +29,7 @@ let stdin = '';
 process.stdin.setEncoding('utf8');
 process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
-  const leaked = Object.keys(process.env).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_|OPENAI_)/i.test(k) && k !== 'CLAUDE_CONFIG_DIR');
+  const leaked = Object.keys(process.env).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_|OPENAI_|NODE_EXTRA_CA|NODE_TLS|SSL_CERT)|_PROXY$/i.test(k) && k !== 'CLAUDE_CONFIG_DIR');
   fs.writeFileSync(path.join(process.cwd(), 'ran.marker'), JSON.stringify({ args, stdin, leaked }));
   console.log('FAKE-ANSWER');
 });
@@ -71,7 +71,8 @@ afterAll(() => {
 function runCli(args: string[], extraEnv: Record<string, string> = {}) {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (value !== undefined && key.toLowerCase() !== 'path') env[key] = value;
+    // The machine running the tests may itself sit behind a proxy or base URL; keep that out.
+    if (value !== undefined && key.toLowerCase() !== 'path' && !/^(ANTHROPIC_BASE|CLAUDE_CODE_USE_|NODE_EXTRA_CA|NODE_TLS|SSL_CERT)|_PROXY$/i.test(key)) env[key] = value;
   }
   env['PATH'] = [bin, process.env['PATH'] ?? process.env['Path'] ?? ''].join(delimiter);
   Object.assign(env, { CLAUDE_CONFIG_DIR: cfg, HOME: home, USERPROFILE: home }, extraEnv);
@@ -88,7 +89,7 @@ const noSecrets = (text: string) => {
 
 describe('Claude runner hardening against a fake CLI', () => {
   it('runs with restricted + safe mode, even when the caller environment is dirty', () => {
-    const dirty = { ANTHROPIC_API_KEY: 'sk-ant-SECRET', ANTHROPIC_BASE_URL: 'https://proxy.example', CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_OAUTH_TOKEN: 'tok', AWS_ACCESS_KEY_ID: 'a' };
+    const dirty = { ANTHROPIC_API_KEY: 'sk-ant-SECRET', CLAUDE_CODE_OAUTH_TOKEN: 'tok', AWS_ACCESS_KEY_ID: 'a' };
     const r = runCli(START(), dirty);
     expect(r.stderr).not.toContain('refused');
     expect(r.code).toBe(0);
@@ -99,6 +100,19 @@ describe('Claude runner hardening against a fake CLI', () => {
     expect(ran?.stdin).toBe('summarize');
     expect(ran?.leaked).toEqual([]);
     noSecrets(r.stdout + r.stderr);
+  });
+
+  it('refuses, without starting claude, when the caller has proxy/TLS/base-URL variables, and runs without them when accepted', () => {
+    const redirects = { HTTPS_PROXY: 'http://user:topsecret@proxy.example:8080', ANTHROPIC_BASE_URL: 'https://gateway.example', NODE_EXTRA_CA_CERTS: '/ca.pem', CLAUDE_CODE_USE_BEDROCK: '1' };
+    const refused = runCli(START(), redirects);
+    expect(refused.code).toBe(1);
+    expect(refused.stderr).toContain('not forwarded: ANTHROPIC_BASE_URL, CLAUDE_CODE_USE_BEDROCK, HTTPS_PROXY, NODE_EXTRA_CA_CERTS');
+    expect(refused.stderr).not.toContain('topsecret');
+    expect(refused.stderr).not.toContain('gateway.example');
+    expect(marker()).toBeUndefined();
+    const accepted = runCli([...START(), '--accept-unverified'], redirects);
+    expect(accepted.code).toBe(0);
+    expect(marker()?.leaked).toEqual([]);
   });
 
   it('refuses dirty user settings env, naming keys but never values, without starting claude', () => {

@@ -18,8 +18,9 @@ import {
   checkGitRepo,
   claudeCodeAdapter,
   missingClaudeFlags,
-  scanClaudeSettings,
-  settingsLocations,
+  scanClaudeSettingsFor,
+  redirectingEnvNames,
+  MANAGED_POLICY_LIMIT,
   claudeRunEnv,
   codexAdapter,
   createExec,
@@ -111,6 +112,8 @@ export interface Deps {
   readonly claudeSettings?: (cwd: string) => Promise<SettingsScan>;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
+  /** Caller environment for the Claude run; defaults to `process.env`. */
+  readonly env?: Readonly<Record<string, string | undefined>>;
   readonly now?: () => Date;
 }
 
@@ -456,7 +459,9 @@ const CLAUDE_REFUSALS: Record<ClaudeRefusalReason, string> = {
   'claude-version-unknown': 'the Claude Code version could not be read or parsed, which ultracode requires',
   'claude-flags-unverified': 'the Claude CLI did not list every safety flag the run needs (see claude --help); refusing to guess',
   'settings-unsafe': 'a Claude settings file sets credentials, a provider, a proxy or a login helper',
-  'settings-unverifiable': 'a Claude settings file exists but could not be read or parsed, so it could not be verified',
+  'settings-unverifiable': 'a Claude settings file exists but could not be read or parsed, or the repository layout could not be established, so settings could not be verified',
+  'network-env-not-forwarded':
+    'proxy/TLS/base-URL variables are set in this shell but are not forwarded to Claude, which connects directly; add --accept-unverified to run without them',
   'selection-blocked': 'the model/effort/mode selection is blocked',
   'unverified-selection': 'the model/effort/mode selection could not be verified; add --accept-unverified to run anyway',
 };
@@ -477,12 +482,12 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
   }
   // Probe with the same cleaned environment the run will use, so an API key in the caller's
   // environment cannot make the check pass or fail differently from the real run.
-  const exec = deps.exec ?? createExec({ env: claudeRunEnv(process.env) });
+  const exec = deps.exec ?? createExec({ env: claudeRunEnv(deps.env ?? process.env) });
   const [auth, provider, help, settings] = await Promise.all([
     detectAuth(claudeCodeAdapter, exec),
     detectProvider(claudeCodeAdapter, exec),
     exec('claude', ['--help'], { timeoutMs: 5000 }),
-    (deps.claudeSettings ?? ((dir: string) => scanClaudeSettings(settingsLocations({ cwd: dir }))))(cwd),
+    (deps.claudeSettings ?? ((dir: string) => scanClaudeSettingsFor(dir)))(cwd),
   ]);
   const selection = resolveSelection('claude', args.request, { claude: claudeRegistry, codex: { state: 'ok', models: [] } });
   const extraFlags = [
@@ -490,6 +495,7 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
     ...(args.request.effort === 'auto' && args.request.mode === 'normal' ? [] : ['--effort']),
   ];
   const missingFlags = help.kind === 'ok' ? missingClaudeFlags(help.stdout, extraFlags) : undefined;
+  const networkRedirects = redirectingEnvNames(deps.env ?? process.env);
   const plan = planClaudeRun({
     task: args.task,
     auth,
@@ -497,11 +503,17 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
     version: provider.version,
     missingFlags,
     settings,
+    networkRedirects,
     acceptUnverified: args.acceptUnverified,
   });
   const findingLines = (plan.ok ? [] : plan.findings).map((f) => `  finding: ${f.kind} settings ${f.key}\n`);
   const settingsLine =
-    settings.status === 'unverifiable' ? `  settings: ${settings.kind} file is ${settings.problem}\n` : '';
+    settings.status !== 'unverifiable'
+      ? ''
+      : settings.problem === 'repo-unresolved'
+        ? '  settings: repository root could not be resolved, so project settings places are unverified\n'
+        : `  settings: ${settings.kind} file is ${settings.problem}\n`;
+  const networkLine = networkRedirects.length === 0 ? '' : `  not forwarded: ${networkRedirects.join(', ')}\n`;
   if (args.dryRun) {
     const login = auth.state === 'logged-in' ? `${auth.method ?? 'unknown'} login${auth.plan === undefined ? '' : ` (${auth.plan})`}` : auth.state;
     const required = ['--confirm', ...(selection.issues.length > 0 && !selection.blocked ? ['--accept-unverified'] : [])];
@@ -513,6 +525,8 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
         `  settings check: ${settings.status}\n` +
         findingLines.join('') +
         settingsLine +
+        `  managed policy: ${MANAGED_POLICY_LIMIT}\n` +
+        networkLine +
         `  login: ${login}\n  cli version: ${provider.version ?? 'unknown'}\n` +
         `  model: ${describePinned(selection.model)}\n  effort: ${describePinned(selection.effort)}\n` +
         `  mode: ${selection.mode}\n  timeout: ${String(args.timeoutMs / 1000)}s\n  task: ${String(args.task.length)} characters\n` +
@@ -524,7 +538,7 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
   }
   if (!plan.ok) {
     io.error(
-      `run refused: ${CLAUDE_REFUSALS[plan.reason]}\n${findingLines.join('')}${settingsLine}` +
+      `run refused: ${CLAUDE_REFUSALS[plan.reason]}\n${findingLines.join('')}${settingsLine}${networkLine}` +
         plan.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join(''),
     );
     return 1;
@@ -536,7 +550,7 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
   );
   const outcome = await runClaude(
     { task: args.task, cwd, selection, timeoutMs: args.timeoutMs, ...(deps.signal === undefined ? {} : { signal: deps.signal }) },
-    deps.runner === undefined ? {} : { runner: deps.runner },
+    { ...(deps.runner === undefined ? {} : { runner: deps.runner }), ...(deps.env === undefined ? {} : { env: deps.env }) },
   );
   if (outcome.kind !== 'completed') {
     io.error(`${RUN_FAILURES[outcome.kind].replace('codex', 'claude')}\n`);

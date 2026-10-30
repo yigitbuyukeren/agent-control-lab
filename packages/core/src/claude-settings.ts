@@ -1,6 +1,8 @@
 import { readFile, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { posix, win32 } from 'node:path';
+import type { ProcessRunner } from './process-runner.ts';
+import { discoverRepoRoots, projectSettingsDirs, realCwd } from './repo-roots.ts';
 
 export type SettingsKind = 'user' | 'project' | 'local' | 'managed';
 
@@ -15,7 +17,16 @@ export interface SettingsFinding {
   readonly key: string;
 }
 
-export type SettingsProblem = 'unreadable' | 'invalid' | 'too-large';
+/** `repo-unresolved`: the repository layout could not be established, so project places are unknown. */
+export type SettingsProblem = 'unreadable' | 'invalid' | 'too-large' | 'repo-unresolved';
+
+/**
+ * What the file scan cannot see. Managed policy can also come from MDM (macOS profiles, Windows
+ * registry/GPO) or from the server (remote managed settings, organisation policy); none of that
+ * is readable here, so a clean scan never proves the active policy is safe.
+ */
+export const MANAGED_POLICY_LIMIT =
+  'file scan only: MDM/registry and server-managed (remote) policy are not covered, so the active managed policy is unverified';
 
 export type SettingsScan =
   | { readonly status: 'clean' }
@@ -27,10 +38,27 @@ const MAX_SETTINGS_BYTES = 256 * 1024;
 
 /** Environment names that could move Claude off the subscription or through another endpoint. */
 const UNSAFE_ENV_PREFIXES = ['ANTHROPIC_', 'CLAUDE_CODE_USE_', 'CLAUDE_CODE_OAUTH', 'CLAUDE_CODE_API_KEY', 'AWS_', 'GOOGLE_', 'CLOUD_ML_', 'VERTEX_'];
-const UNSAFE_ENV_NAMES: ReadonlySet<string> = new Set([
+/** Proxy and TLS names that can send the connection somewhere else or change who is trusted. */
+const NETWORK_ENV_NAMES: ReadonlySet<string> = new Set([
   'HTTP_PROXY', 'HTTPS_PROXY', 'ALL_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
-  'NODE_TLS_REJECT_UNAUTHORIZED', 'NODE_OPTIONS',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
 ]);
+const UNSAFE_ENV_NAMES: ReadonlySet<string> = new Set([...NETWORK_ENV_NAMES, 'NODE_OPTIONS']);
+
+/**
+ * Names (never values) in `env` that would redirect the connection or the login if forwarded:
+ * proxy/TLS variables and any base-URL or cloud-provider switch.
+ */
+export function redirectingEnvNames(env: Readonly<Record<string, string | undefined>>): string[] {
+  return Object.entries(env)
+    .filter(([key, value]) => {
+      if (value === undefined || value === '') return false;
+      const name = key.toUpperCase();
+      return NETWORK_ENV_NAMES.has(name) || name.startsWith('ANTHROPIC_BASE') || name.startsWith('CLAUDE_CODE_USE_');
+    })
+    .map(([key]) => key.toUpperCase())
+    .sort();
+}
 /** Top-level settings that run helpers or force a login method. */
 const UNSAFE_SETTING_KEYS: ReadonlySet<string> = new Set([
   'apikeyhelper', 'awsauthrefresh', 'awscredentialexport', 'forceloginmethod',
@@ -46,18 +74,24 @@ export interface SettingsPlaces {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly platform?: NodeJS.Platform;
   readonly home?: string;
+  /** Directories whose `.claude` project files apply (see `projectSettingsDirs`); defaults to `[cwd]`. */
+  readonly projectDirs?: readonly string[];
 }
 
 /**
  * Where Claude Code may read settings from: user, project, project-local and managed (admin)
- * files. `--restricted` ignores the first three, but managed settings still apply, so every
- * place is checked.
+ * files. Project and local files are checked in every directory from the working directory up to
+ * the repository root, plus the main worktree root, because the observed resolution (local
+ * settings from the repository root, project settings relative to the directory) is not
+ * guaranteed. `--restricted` ignores the first three, but managed settings still apply, so every
+ * place is checked. Only managed *files* are listed; see `MANAGED_POLICY_LIMIT`.
  */
 export function settingsLocations(places: SettingsPlaces): SettingsLocation[] {
   const platform = places.platform ?? process.platform;
   const env = places.env ?? process.env;
   const home = places.home ?? homedir();
   const path = platform === 'win32' ? win32 : posix;
+  const dirs = places.projectDirs ?? [places.cwd];
   const configured = env['CLAUDE_CONFIG_DIR'];
   const userDir = configured !== undefined && configured !== '' ? configured : path.join(home, '.claude');
   const managed =
@@ -68,8 +102,10 @@ export function settingsLocations(places: SettingsPlaces): SettingsLocation[] {
         : ['/etc/claude-code/managed-settings.json'];
   return [
     { kind: 'user', path: path.join(userDir, 'settings.json') },
-    { kind: 'project', path: path.join(places.cwd, '.claude', 'settings.json') },
-    { kind: 'local', path: path.join(places.cwd, '.claude', 'settings.local.json') },
+    ...dirs.flatMap((dir): SettingsLocation[] => [
+      { kind: 'project', path: path.join(dir, '.claude', 'settings.json') },
+      { kind: 'local', path: path.join(dir, '.claude', 'settings.local.json') },
+    ]),
     ...managed.map((p): SettingsLocation => ({ kind: 'managed', path: p })),
   ];
 }
@@ -128,6 +164,41 @@ export async function scanClaudeSettings(
     findings.push(...result);
   }
   return findings.length === 0 ? { status: 'clean' } : { status: 'unsafe', findings };
+}
+
+/**
+ * Scans every settings place for `cwd`, using read-only git to find the repository root and any
+ * main worktree. If git cannot say where the repository is, the scan is `unverifiable` rather
+ * than limited to the working directory.
+ */
+export async function scanClaudeSettingsFor(
+  cwd: string,
+  options: {
+    readonly env?: Readonly<Record<string, string | undefined>>;
+    readonly platform?: NodeJS.Platform;
+    readonly home?: string;
+    readonly runner?: ProcessRunner;
+  } = {},
+): Promise<SettingsScan> {
+  const real = await realCwd(cwd);
+  const unresolved: SettingsScan = { status: 'unverifiable', kind: 'project', problem: 'repo-unresolved' };
+  if (real === undefined) return unresolved;
+  const roots = await discoverRepoRoots(real, {
+    ...(options.runner === undefined ? {} : { runner: options.runner }),
+    ...(options.env === undefined ? {} : { env: options.env }),
+    ...(options.platform === undefined ? {} : { platform: options.platform }),
+  });
+  const projectDirs = projectSettingsDirs(real, roots, options.platform);
+  if (projectDirs === undefined) return unresolved;
+  return scanClaudeSettings(
+    settingsLocations({
+      cwd: real,
+      projectDirs,
+      ...(options.env === undefined ? {} : { env: options.env }),
+      ...(options.platform === undefined ? {} : { platform: options.platform }),
+      ...(options.home === undefined ? {} : { home: options.home }),
+    }),
+  );
 }
 
 /** Flags the run depends on; a CLI whose own help does not list all of them is not trusted. */

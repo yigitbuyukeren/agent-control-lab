@@ -349,7 +349,7 @@ describe('cli', () => {
     };
     const START = ['run', '--provider', 'claude', '--task', 'summarize this', '--confirm'];
 
-    async function go(argv: string[], over: { exec?: Exec; outcome?: ProcessOutcome; settings?: SettingsScan } = {}) {
+    async function go(argv: string[], over: { exec?: Exec; outcome?: ProcessOutcome; settings?: SettingsScan; env?: Record<string, string> } = {}) {
       const specs: ProcessSpec[] = [];
       let out = '';
       let error = '';
@@ -362,6 +362,8 @@ describe('cli', () => {
             exec: over.exec ?? claudeExec({ stdout: AUTH_PRO }),
             claudeSettings: () => Promise.resolve(over.settings ?? { status: 'clean' }),
             cwd: dir,
+            // Explicit, so a proxy or base URL in the machine running the tests cannot change the plan.
+            env: over.env ?? { PATH: '/bin' },
             runner: (spec) => {
               specs.push(spec);
               return Promise.resolve(over.outcome ?? { kind: 'completed', exitCode: 0, stdout: 'answer\n', truncated: false });
@@ -383,6 +385,26 @@ describe('cli', () => {
       expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-p', '--tools', '', '--strict-mcp-config', '--restricted', '--safe-mode', '--no-session-persistence']));
       expect(Object.keys(r.specs[0]?.env ?? {}).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_)/i.test(k) && k !== 'CLAUDE_CONFIG_DIR')).toEqual([]);
       expect(r.error).not.toContain('example.com');
+    });
+
+    it('refuses, naming only variable names, when proxy/TLS/base-URL variables would not be forwarded', async () => {
+      const env = { PATH: '/bin', HTTPS_PROXY: 'http://user:topsecret@proxy.example:8080', NODE_EXTRA_CA_CERTS: '/ca.pem' };
+      const refused = await go(START, { env });
+      expect(refused.code).toBe(1);
+      expect(refused.specs).toEqual([]);
+      expect(refused.error).toContain('not forwarded to Claude');
+      expect(refused.error).toContain('not forwarded: HTTPS_PROXY, NODE_EXTRA_CA_CERTS');
+      expect(refused.error + refused.out).not.toContain('topsecret');
+      expect(refused.error + refused.out).not.toContain('proxy.example');
+      const accepted = await go([...START, '--accept-unverified'], { env });
+      expect(accepted.code).toBe(0);
+      expect(Object.keys(accepted.specs[0]?.env ?? {}).filter((k) => /PROXY|CERT|TLS/i.test(k))).toEqual([]);
+    });
+
+    it('states in the dry run that managed/MDM/server policy is not covered by the file scan', async () => {
+      const r = await go(['run', '--provider', 'claude', '--task', 'x', '--dry-run']);
+      expect(r.out).toContain('managed policy: file scan only');
+      expect(r.out).toContain('MDM/registry and server-managed (remote) policy are not covered');
     });
 
     it('refuses API-key, third-party, non-Pro/Max, logged-out and missing logins', async () => {

@@ -1,12 +1,13 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { isUnsafeEnvName, missingClaudeFlags, scanClaudeSettings, settingsLocations, type SettingsLocation } from './claude-settings.ts';
+import { MANAGED_POLICY_LIMIT, isUnsafeEnvName, missingClaudeFlags, redirectingEnvNames, scanClaudeSettings, scanClaudeSettingsFor, settingsLocations, type SettingsLocation } from './claude-settings.ts';
+import type { ProcessOutcome } from './process-runner.ts';
 
 let dir = '';
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), 'acl settings '));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), 'acl settings ')));
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
@@ -107,5 +108,77 @@ describe('missingClaudeFlags', () => {
   });
   it('does not match a flag that is only a prefix of another', () => {
     expect(missingClaudeFlags(help.replace('--safe-mode', '--safe-mode-extra'))).toEqual(['--safe-mode']);
+  });
+});
+
+describe('settingsLocations: repository places', () => {
+  it('lists project and local files for every directory given, on each platform', () => {
+    const posixDirs = settingsLocations({ cwd: '/r/a', projectDirs: ['/r/a', '/r', '/main'], home: '/h', env: {}, platform: 'linux' })
+      .filter((l) => l.kind === 'project' || l.kind === 'local').map((l) => l.path);
+    expect(posixDirs).toEqual([
+      '/r/a/.claude/settings.json', '/r/a/.claude/settings.local.json',
+      '/r/.claude/settings.json', '/r/.claude/settings.local.json',
+      '/main/.claude/settings.json', '/main/.claude/settings.local.json',
+    ]);
+    const win = settingsLocations({ cwd: 'C:\\r\\a', projectDirs: ['C:\\r\\a', 'C:\\r'], home: 'C:\\h', env: {}, platform: 'win32' })
+      .filter((l) => l.kind === 'local').map((l) => l.path);
+    expect(win).toEqual(['C:\\r\\a\\.claude\\settings.local.json', 'C:\\r\\.claude\\settings.local.json']);
+  });
+});
+
+describe('redirectingEnvNames', () => {
+  it('reports names only, upper-cased, for proxy/TLS/base-URL/provider switches', () => {
+    expect(redirectingEnvNames({
+      https_proxy: 'http://user:secret@p', NODE_EXTRA_CA_CERTS: '/ca', ANTHROPIC_BASE_URL: 'u', CLAUDE_CODE_USE_VERTEX: '1',
+      PATH: '/bin', ANTHROPIC_API_KEY: 'k', HTTP_PROXY: '', NO_PROXY: undefined,
+    })).toEqual(['ANTHROPIC_BASE_URL', 'CLAUDE_CODE_USE_VERTEX', 'HTTPS_PROXY', 'NODE_EXTRA_CA_CERTS']);
+    expect(JSON.stringify(redirectingEnvNames({ HTTPS_PROXY: 'http://user:secret@p' }))).not.toContain('secret');
+  });
+});
+
+describe('MANAGED_POLICY_LIMIT', () => {
+  it('says the scan does not cover MDM or server-managed policy', () => {
+    expect(MANAGED_POLICY_LIMIT).toMatch(/MDM/);
+    expect(MANAGED_POLICY_LIMIT).toMatch(/server-managed/);
+    expect(MANAGED_POLICY_LIMIT).toMatch(/unverified/);
+  });
+});
+
+describe('scanClaudeSettingsFor (mock git)', () => {
+  const git = (outcome: ProcessOutcome) => () => Promise.resolve(outcome);
+  const done = (stdout: string, exitCode = 0): ProcessOutcome => ({ kind: 'completed', exitCode, stdout, truncated: false });
+  const base = { env: { CLAUDE_CONFIG_DIR: '/nonexistent-acl-config' }, platform: process.platform };
+
+  it('finds unsafe local settings at the repository root when run from a subdirectory', async () => {
+    const root = join(dir, 'repo');
+    const sub = join(root, 'pkg', 'deep');
+    mkdirSync(join(root, '.claude'), { recursive: true });
+    mkdirSync(sub, { recursive: true });
+    writeFileSync(join(root, '.claude', 'settings.local.json'), JSON.stringify({ env: { HTTPS_PROXY: 'x' } }));
+    const scan = await scanClaudeSettingsFor(sub, { ...base, runner: git(done(`${root}\n${join(root, '.git')}\n`)) });
+    expect(scan).toEqual({ status: 'unsafe', findings: [{ kind: 'local', key: 'env.HTTPS_PROXY' }] });
+  });
+
+  it('also scans the main worktree root for a linked worktree', async () => {
+    const main = join(dir, 'main');
+    const wt = join(dir, 'wt');
+    mkdirSync(join(main, '.claude'), { recursive: true });
+    mkdirSync(wt, { recursive: true });
+    writeFileSync(join(main, '.claude', 'settings.json'), JSON.stringify({ apiKeyHelper: 'x' }));
+    const scan = await scanClaudeSettingsFor(wt, { ...base, runner: git(done(`${wt}\n${join(main, '.git')}\n`)) });
+    expect(scan).toEqual({ status: 'unsafe', findings: [{ kind: 'project', key: 'apiKeyHelper' }] });
+  });
+
+  it('is clean for a repository without settings, and for a non-repository directory', async () => {
+    expect(await scanClaudeSettingsFor(dir, { ...base, runner: git(done(`${dir}\n${join(dir, '.git')}\n`)) })).toEqual({ status: 'clean' });
+    expect(await scanClaudeSettingsFor(dir, { ...base, runner: git(done('', 128)) })).toEqual({ status: 'clean' });
+  });
+
+  it('fails closed when git cannot place the directory', async () => {
+    const unresolved = { status: 'unverifiable', kind: 'project', problem: 'repo-unresolved' };
+    for (const outcome of [{ kind: 'not-found' }, { kind: 'timeout' }, done('', 129), done('relative\n.git\n'), done(`${dir}\n`), done(`${join(dir, 'elsewhere')}\n${join(dir, 'elsewhere', '.git')}\n`)] as ProcessOutcome[]) {
+      expect(await scanClaudeSettingsFor(dir, { ...base, runner: git(outcome) })).toEqual(unresolved);
+    }
+    expect(await scanClaudeSettingsFor(join(dir, 'missing'), { ...base, runner: git(done('')) })).toEqual(unresolved);
   });
 });

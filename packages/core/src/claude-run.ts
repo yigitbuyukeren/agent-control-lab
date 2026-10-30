@@ -16,14 +16,15 @@ const ENV_ALLOWLIST: ReadonlySet<string> = new Set(
     'PATH', 'PATHEXT', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA',
     'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP', 'TMPDIR', 'USER', 'USERNAME', 'LOGNAME',
     'LANG', 'LANGUAGE', 'TERM', 'TZ', 'DBUS_SESSION_BUS_ADDRESS', 'CLAUDE_CONFIG_DIR',
-    'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
   ],
 );
 const ENV_ALLOWED_PREFIXES = ['LC_', 'XDG_'];
 
 /**
  * An allowlist, not a blocklist: the child gets only what it needs to run and to find its
- * normal login. API keys, auth tokens, base URLs, model overrides, Bedrock/Vertex/Foundry
+ * normal login. Proxy and TLS variables (`*_PROXY`, `NODE_EXTRA_CA_CERTS`, `SSL_CERT_*`) are
+ * deliberately not forwarded: the subscription connection goes directly, never through a proxy
+ * or an extra trust root inherited from the parent. API keys, auth tokens, base URLs, model overrides, Bedrock/Vertex/Foundry
  * switches, and every other `CLAUDE*`/`ANTHROPIC*` variable (including those of a parent
  * Claude Code session) never reach it.
  */
@@ -97,6 +98,7 @@ export type ClaudeRefusalReason =
   | 'claude-flags-unverified'
   | 'settings-unsafe'
   | 'settings-unverifiable'
+  | 'network-env-not-forwarded'
   | 'selection-blocked'
   | 'unverified-selection';
 
@@ -122,6 +124,8 @@ export function planClaudeRun(input: {
   /** Required CLI flags missing from `claude --help`, or `undefined` if help could not be read. */
   missingFlags: readonly string[] | undefined;
   settings: SettingsScan;
+  /** Names of proxy/TLS/base-URL variables set in the caller's environment (see `redirectingEnvNames`). */
+  networkRedirects?: readonly string[];
   acceptUnverified: boolean;
 }): ClaudeRunPlan {
   const refuse = (
@@ -143,6 +147,9 @@ export function planClaudeRun(input: {
   if (input.missingFlags === undefined || input.missingFlags.length > 0) return refuse('claude-flags-unverified');
   if (input.settings.status === 'unverifiable') return refuse('settings-unverifiable');
   if (input.settings.status === 'unsafe') return refuse('settings-unsafe', [], input.settings.findings);
+  // These variables are not forwarded, so the run would connect differently than the caller's
+  // own shell does. Say so instead of silently changing the network path.
+  if ((input.networkRedirects?.length ?? 0) > 0 && !input.acceptUnverified) return refuse('network-env-not-forwarded');
   if (selection.blocked) return refuse('selection-blocked', selection.issues.filter((i) => i.blocking));
   if (selection.mode === 'ultracode') {
     if (input.version === undefined) return refuse('claude-version-unknown');

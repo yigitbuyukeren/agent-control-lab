@@ -48,12 +48,20 @@ describe('buildClaudePrintArgs', () => {
 describe('claudeRunEnv', () => {
   it('keeps only what the child needs and drops credentials, overrides and parent-session variables', () => {
     const env = claudeRunEnv({
-      PATH: '/bin', HOME: '/h', LANG: 'C', LC_ALL: 'C', XDG_CONFIG_HOME: '/x', CLAUDE_CONFIG_DIR: '/cfg', HTTPS_PROXY: 'p',
+      PATH: '/bin', HOME: '/h', LANG: 'C', LC_ALL: 'C', XDG_CONFIG_HOME: '/x', CLAUDE_CONFIG_DIR: '/cfg',
       ANTHROPIC_API_KEY: 'k', anthropic_auth_token: 't', ANTHROPIC_BASE_URL: 'u', ANTHROPIC_MODEL: 'm',
       CLAUDE_CODE_USE_BEDROCK: '1', CLAUDE_CODE_OAUTH_TOKEN: 'o', AWS_BEARER_TOKEN_BEDROCK: 'b', AWS_ACCESS_KEY_ID: 'a',
       CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'e', CLAUDE_CODE_MESSAGING_TOKEN: 'm', OPENAI_API_KEY: 'o', RANDOM_SECRET: 's',
     });
-    expect(env).toEqual({ PATH: '/bin', HOME: '/h', LANG: 'C', LC_ALL: 'C', XDG_CONFIG_HOME: '/x', CLAUDE_CONFIG_DIR: '/cfg', HTTPS_PROXY: 'p' });
+    expect(env).toEqual({ PATH: '/bin', HOME: '/h', LANG: 'C', LC_ALL: 'C', XDG_CONFIG_HOME: '/x', CLAUDE_CONFIG_DIR: '/cfg' });
+  });
+
+  it('does not forward proxy or TLS variables, in any case', () => {
+    const env = claudeRunEnv({
+      PATH: '/bin', HTTP_PROXY: 'a', https_proxy: 'b', ALL_PROXY: 'c', NO_PROXY: 'd', NODE_EXTRA_CA_CERTS: 'e',
+      SSL_CERT_FILE: 'f', SSL_CERT_DIR: 'g', NODE_TLS_REJECT_UNAUTHORIZED: '0', NODE_OPTIONS: '--x',
+    });
+    expect(env).toEqual({ PATH: '/bin' });
   });
 });
 
@@ -122,6 +130,24 @@ describe('planClaudeRun', () => {
   });
 });
 
+describe('planClaudeRun: network variables that are not forwarded', () => {
+  const plan = (over: Partial<Parameters<typeof planClaudeRun>[0]> = {}) =>
+    planClaudeRun({ task: 'hi', auth: auth(), selection: selectionFor(), version: '2.1.312', missingFlags: [], settings: { status: 'clean' }, acceptUnverified: false, ...over });
+
+  it('refuses with a named reason unless the caller accepts running without them', () => {
+    expect(plan({ networkRedirects: ['HTTPS_PROXY'] })).toMatchObject({ ok: false, reason: 'network-env-not-forwarded' });
+    expect(plan({ networkRedirects: ['HTTPS_PROXY'], acceptUnverified: true })).toMatchObject({ ok: true });
+    expect(plan({ networkRedirects: [] })).toMatchObject({ ok: true });
+  });
+
+  it('never outranks login, settings or flag refusals', () => {
+    const networkRedirects = ['HTTPS_PROXY'];
+    expect(plan({ networkRedirects, auth: auth({ method: 'api-key' }) })).toMatchObject({ reason: 'api-key-login' });
+    expect(plan({ networkRedirects, missingFlags: undefined })).toMatchObject({ reason: 'claude-flags-unverified' });
+    expect(plan({ networkRedirects, settings: { status: 'unsafe', findings: [] }, acceptUnverified: true })).toMatchObject({ reason: 'settings-unsafe' });
+  });
+});
+
 describe('planClaudeRun: fail-closed hardening', () => {
   const plan = (over: Partial<Parameters<typeof planClaudeRun>[0]> = {}) =>
     planClaudeRun({ task: 'hi', auth: auth(), selection: selectionFor(), version: '2.1.312', missingFlags: [], settings: { status: 'clean' }, acceptUnverified: true, ...over });
@@ -139,7 +165,7 @@ describe('planClaudeRun: fail-closed hardening', () => {
   });
 
   it('refuses settings that cannot be read or parsed', () => {
-    for (const problem of ['unreadable', 'invalid', 'too-large'] as const) {
+    for (const problem of ['unreadable', 'invalid', 'too-large', 'repo-unresolved'] as const) {
       expect(plan({ settings: { status: 'unverifiable', kind: 'user', problem } })).toMatchObject({ reason: 'settings-unverifiable' });
     }
   });

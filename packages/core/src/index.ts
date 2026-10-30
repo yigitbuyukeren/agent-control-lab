@@ -43,3 +43,4 @@ export * from './codex-run.ts';
 export * from './git-preflight.ts';
 export * from './claude-run.ts';
 export * from './claude-settings.ts';
+export * from './repo-roots.ts';

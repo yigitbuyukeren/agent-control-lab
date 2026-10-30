@@ -67,33 +67,50 @@ describe('validateTask / validateWorkingDir', () => {
 });
 
 describe('planCodexRun', () => {
-  const task = 'review the repo';
-  it('allows only a subscription login', () => {
-    expect(planCodexRun({ task, auth: auth({}), selection: selectionFor() })).toEqual({ ok: true, warnings: [] });
+  const unverified = resolveSelection('codex', { ...DEFAULT_REQUEST, model: 'gpt-a' }, { claude: claudeRegistry, codex: { state: 'error', error: 'timed out' } });
+  const plan = (over: Partial<Parameters<typeof planCodexRun>[0]> = {}) =>
+    planCodexRun({ task: 'review the repo', auth: auth({}), selection: selectionFor(), git: 'repo', acceptUnverified: false, ...over });
+  const reason = (over: Partial<Parameters<typeof planCodexRun>[0]>) => {
+    const p = plan(over);
+    return p.ok ? 'ok' : p.reason;
+  };
+
+  it('allows a subscription login inside a Git repo with a clean selection', () => {
+    expect(plan()).toEqual({ ok: true, warnings: [] });
   });
+
   it('refuses every other login state without any fallback', () => {
-    const refusal = (a: AuthStatus) => {
-      const plan = planCodexRun({ task, auth: a, selection: selectionFor() });
-      return plan.ok ? 'ok' : plan.reason;
-    };
-    expect(refusal(auth({ method: 'api-key' }))).toBe('api-key-login');
-    expect(refusal(auth({ method: 'unknown' }))).toBe('login-method-unknown');
-    expect(refusal(auth({ state: 'logged-out' }))).toBe('not-logged-in');
-    expect(refusal(auth({ state: 'not-installed' }))).toBe('codex-not-installed');
-    expect(refusal(auth({ state: 'unknown' }))).toBe('login-state-unknown');
-    expect(refusal(auth({ state: 'error' }))).toBe('login-state-unknown');
+    expect(reason({ auth: auth({ method: 'api-key' }) })).toBe('api-key-login');
+    expect(reason({ auth: auth({ method: 'unknown' }) })).toBe('login-method-unknown');
+    expect(reason({ auth: auth({ state: 'logged-out' }) })).toBe('not-logged-in');
+    expect(reason({ auth: auth({ state: 'not-installed' }) })).toBe('codex-not-installed');
+    expect(reason({ auth: auth({ state: 'unknown' }) })).toBe('login-state-unknown');
+    expect(reason({ auth: auth({ state: 'error' }) })).toBe('login-state-unknown');
   });
-  it('refuses an invalid task first and blocked selections with their issues', () => {
-    expect(planCodexRun({ task: '', auth: auth({}), selection: selectionFor() })).toMatchObject({ reason: 'task-invalid' });
-    const blocked = planCodexRun({ task, auth: auth({}), selection: selectionFor({ model: 'nope' }) });
-    expect(blocked).toMatchObject({ ok: false, reason: 'selection-blocked', issues: [{ code: 'model-not-listed' }] });
-    const ultracode = planCodexRun({ task, auth: auth({}), selection: selectionFor({ mode: 'ultracode' }) });
-    expect(ultracode).toMatchObject({ ok: false, reason: 'selection-blocked', issues: [{ code: 'mode-unsupported' }] });
+
+  it('refuses outside a Git repo with distinct reasons, before anything else', () => {
+    expect(reason({ git: 'not-a-repo' })).toBe('not-a-git-repo');
+    expect(reason({ git: 'git-not-installed' })).toBe('git-not-installed');
+    expect(reason({ git: 'check-failed' })).toBe('git-check-failed');
+    expect(reason({ git: 'not-a-repo', auth: auth({ state: 'logged-out' }) })).toBe('not-a-git-repo');
+    expect(reason({ task: '', git: 'not-a-repo' })).toBe('task-invalid');
   });
-  it('carries non-blocking issues as warnings', () => {
-    const selection = resolveSelection('codex', { ...DEFAULT_REQUEST, model: 'gpt-a' }, { claude: claudeRegistry, codex: { state: 'error', error: 'timed out' } });
-    const plan = planCodexRun({ task, auth: auth({}), selection });
-    expect(plan).toMatchObject({ ok: true, warnings: [{ code: 'model-discovery-failed' }] });
+
+  it('refuses blocked selections with their issues, even with acceptUnverified', () => {
+    for (const acceptUnverified of [false, true]) {
+      expect(plan({ selection: selectionFor({ model: 'nope' }), acceptUnverified })).toMatchObject({ ok: false, reason: 'selection-blocked', issues: [{ code: 'model-not-listed' }] });
+      expect(plan({ selection: selectionFor({ mode: 'ultracode' }), acceptUnverified })).toMatchObject({ reason: 'selection-blocked', issues: [{ code: 'mode-unsupported' }] });
+      expect(plan({ selection: selectionFor({ model: 'gpt-a', effort: 'max' }), acceptUnverified })).toMatchObject({ reason: 'selection-blocked' });
+    }
+  });
+
+  it('needs explicit acceptance for unverified selections and carries them as warnings', () => {
+    expect(plan({ selection: unverified })).toMatchObject({ ok: false, reason: 'unverified-selection', issues: [{ code: 'model-discovery-failed' }] });
+    expect(plan({ selection: unverified, acceptUnverified: true })).toMatchObject({ ok: true, warnings: [{ code: 'model-discovery-failed' }] });
+  });
+
+  it('does not require acceptance when nothing is unverified', () => {
+    expect(plan({ selection: selectionFor({ model: 'gpt-a', effort: 'low' }), acceptUnverified: false })).toMatchObject({ ok: true });
   });
 });
 

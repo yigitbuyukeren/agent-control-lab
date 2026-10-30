@@ -15,6 +15,7 @@ import {
   asEffortLevel,
   availabilityFromAuth,
   checkEffort,
+  checkGitRepo,
   codexAdapter,
   detectAuth,
   planCodexRun,
@@ -43,6 +44,7 @@ import {
   type ProcessRunner,
   type RefusalReason,
   type CodexRunOutcome,
+  type GitState,
   type ProviderPreference,
   type ProviderQuota,
   type RouteDecision,
@@ -68,8 +70,10 @@ Commands:
   quota all             Show Claude (local cache) and Codex (app-server) limits together
   quota claude          Show Claude Code limits from the local statusLine cache
   quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
-  run --provider codex --task "<text>" --confirm [--model auto|<id>] [--effort auto|<level>] [--cwd <dir>] [--timeout <seconds>]
-                        Run Codex read-only (subscription login required, no API-key fallback)
+  run --provider codex --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--cwd <dir>] [--timeout <seconds>]
+                        Run Codex read-only inside a Git repository (subscription login only, no API-key fallback)
+  run --provider codex --task "<text>" --dry-run [...]
+                        Show the run plan without starting any agent
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
   models check <claude|codex> <model> <effort>
                         Exit 0 supported, 1 unsupported, 3 unknown
@@ -90,6 +94,7 @@ export interface Deps {
   readonly readStdin?: () => Promise<string>;
   readonly cacheDir?: string;
   readonly runner?: ProcessRunner;
+  readonly git?: (cwd: string) => Promise<GitState>;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
   readonly now?: () => Date;
@@ -342,12 +347,16 @@ interface RunArgs {
   readonly request: SelectionRequest;
   readonly cwd: string | undefined;
   readonly timeoutMs: number;
+  readonly dryRun: boolean;
+  readonly acceptUnverified: boolean;
 }
 
 function parseRunArgs(args: readonly string[]): RunArgs | string {
   let provider: string | undefined;
   let task: string | undefined;
   let confirm = false;
+  let dryRun = false;
+  let acceptUnverified = false;
   let cwd: string | undefined;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
   let model: string = DEFAULT_REQUEST.model;
@@ -356,6 +365,10 @@ function parseRunArgs(args: readonly string[]): RunArgs | string {
     const arg = args[i];
     if (arg === '--confirm') {
       confirm = true;
+    } else if (arg === '--dry-run') {
+      dryRun = true;
+    } else if (arg === '--accept-unverified') {
+      acceptUnverified = true;
     } else if (arg === '--provider') {
       provider = args[(i += 1)];
     } else if (arg === '--task') {
@@ -390,11 +403,16 @@ function parseRunArgs(args: readonly string[]): RunArgs | string {
   }
   if (provider !== 'codex') return 'only --provider codex is supported';
   if (task === undefined) return '--task "<text>" is required';
-  if (!confirm) return 'run needs --confirm: it starts a real, billed Codex session';
-  return { task, request: { model, effort, mode: 'normal' }, cwd, timeoutMs };
+  if (!confirm && !dryRun) return 'run needs --confirm: it starts a real, billed Codex session';
+  return { task, request: { model, effort, mode: 'normal' }, cwd, timeoutMs, dryRun, acceptUnverified };
 }
 
 const REFUSALS: Record<RefusalReason, string> = {
+  'not-a-git-repo':
+    'the working directory is not inside a Git repository, which Codex needs. Run `git init` yourself or choose another --cwd (nothing is initialised automatically)',
+  'git-not-installed': 'git is not installed, so the repository check could not run',
+  'git-check-failed': 'the Git repository check failed or timed out',
+  'unverified-selection': 'the model/effort selection could not be verified; add --accept-unverified to run anyway',
   'task-invalid': 'the task text is empty, too long or invalid',
   'codex-not-installed': 'codex is not installed',
   'not-logged-in': 'codex is not logged in',
@@ -550,13 +568,29 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         io.error('run refused: the working directory does not exist\n');
         return 1;
       }
+      // All preflight checks are read-only: git rev-parse, codex login status, model/list.
+      const git = await (deps.git ?? ((dir: string) => checkGitRepo(dir)))(cwd);
       const auth = await detectAuth(codexAdapter, deps.exec ?? defaultExec);
       const pinned = args.request.model !== 'auto' || args.request.effort !== 'auto';
       const codex: CodexModelsResult = pinned
         ? await discoverCodexModels(deps.appServer)
         : { state: 'ok', models: [] };
       const selection = resolveSelection('codex', args.request, { claude: claudeRegistry, codex });
-      const plan = planCodexRun({ task: args.task, auth, selection });
+      const plan = planCodexRun({ task: args.task, auth, selection, git, acceptUnverified: args.acceptUnverified });
+      if (args.dryRun) {
+        const login = auth.state === 'logged-in' ? `${auth.method ?? 'unknown'} login` : auth.state;
+        const required = ['--confirm', ...(selection.issues.length > 0 && !selection.blocked ? ['--accept-unverified'] : [])];
+        io.out(
+          'run plan (dry run, no agent started)\n' +
+            `  provider: codex\n  cwd: ${cwd}\n  git: ${git}\n  sandbox: read-only\n  login: ${login}\n` +
+            `  model: ${describePinned(selection.model)}\n  effort: ${describePinned(selection.effort)}\n` +
+            `  mode: normal\n  timeout: ${String(args.timeoutMs / 1000)}s\n  task: ${String(args.task.length)} characters\n` +
+            selection.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join('') +
+            `  requires: ${required.join(', ')}\n` +
+            `  verdict: ${plan.ok ? 'would run' : `would refuse: ${REFUSALS[plan.reason]}`}\n`,
+        );
+        return plan.ok ? 0 : 1;
+      }
       if (!plan.ok) {
         io.error(`run refused: ${REFUSALS[plan.reason]}\n${plan.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join('')}`);
         return 1;

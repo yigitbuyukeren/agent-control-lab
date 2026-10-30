@@ -40,3 +40,4 @@ export * from './app-server-client.ts';
 export * from './selection.ts';
 export * from './process-runner.ts';
 export * from './codex-run.ts';
+export * from './git-preflight.ts';

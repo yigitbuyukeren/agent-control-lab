@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
@@ -180,9 +180,39 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
       expect(attempt([])).toMatchObject({ code: 2 });
       const missing = attempt(['--confirm']);
       expect(missing.code).toBe(1);
-      expect(missing.stderr).toContain('run refused: codex is not installed');
+      // PATH has neither git nor codex: the Git preflight refuses first.
+      expect(missing.stderr).toContain('run refused: git is not installed');
     } finally {
       rmSync(cache, { recursive: true, force: true });
+    }
+  });
+
+  it('run refuses outside a Git repository (real git, no agent started) and dry-run explains why', () => {
+    const plain = realpathSync(mkdtempSync(join(tmpdir(), 'acl smoke nogit ')));
+    try {
+      const env = { ...process.env, GIT_CEILING_DIRECTORIES: dirname(plain) };
+      const base = [bin, 'run', '--provider', 'codex', '--task', 'x', '--cwd', plain];
+      let refused: { status: number; stderr: string } | undefined;
+      try {
+        execFileSync(process.execPath, [...base, '--confirm'], { env, encoding: 'utf8', stdio: 'pipe', timeout: 30000 });
+      } catch (error) {
+        refused = error as { status: number; stderr: string };
+      }
+      expect(refused?.status).toBe(1);
+      expect(refused?.stderr).toContain('not inside a Git repository');
+      expect(refused?.stderr).toContain('Run `git init` yourself');
+      let dry: { status: number; stdout: string } | undefined;
+      try {
+        execFileSync(process.execPath, [...base, '--dry-run'], { env, encoding: 'utf8', stdio: 'pipe', timeout: 30000 });
+      } catch (error) {
+        dry = error as { status: number; stdout: string };
+      }
+      expect(dry?.status).toBe(1);
+      expect(dry?.stdout).toContain('run plan (dry run, no agent started)');
+      expect(dry?.stdout).toContain('git: not-a-repo');
+      expect(existsSync(join(plain, '.git'))).toBe(false);
+    } finally {
+      rmSync(plain, { recursive: true, force: true });
     }
   });
 });

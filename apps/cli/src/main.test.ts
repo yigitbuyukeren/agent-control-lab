@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AppServerProcess, Exec, ProcessOutcome, ProcessSpec } from '@agent-control-lab/core';
+import type { AppServerProcess, Exec, GitState, ProcessOutcome, ProcessSpec } from '@agent-control-lab/core';
 import { run, type Deps } from './main.ts';
 
 async function capture(argv: string[], exec?: Exec) {
@@ -140,7 +140,10 @@ describe('cli', () => {
     };
     const START = ['run', '--provider', 'codex', '--task', 'summarize the repo', '--confirm'];
 
-    async function go(argv: string[], over: { exec?: Exec; outcome?: ProcessOutcome; models?: 'ok' | 'fail' } = {}) {
+    async function go(
+      argv: string[],
+      over: { exec?: Exec; outcome?: ProcessOutcome; models?: 'ok' | 'fail'; git?: GitState } = {},
+    ) {
       const specs: ProcessSpec[] = [];
       let out = '';
       let error = '';
@@ -153,6 +156,7 @@ describe('cli', () => {
             exec: over.exec ?? loginExec('Logged in using ChatGPT'),
             appServer: modelServer(over.models),
             cwd: dir,
+            git: () => Promise.resolve(over.git ?? 'repo'),
             runner: (spec) => {
               specs.push(spec);
               return Promise.resolve(over.outcome ?? { kind: 'completed', exitCode: 0, stdout: 'answer\n', truncated: false });
@@ -228,11 +232,80 @@ describe('cli', () => {
       const unsupported = await go([...START, '--model', 'gpt-a', '--effort', 'max']);
       expect(unsupported.error).toContain('effort-unsupported [blocking]');
       expect(unsupported.specs).toHaveLength(0);
-      const down = await go([...START, '--model', 'gpt-a'], { models: 'fail' });
+      const down = await go([...START, '--model', 'gpt-a', '--accept-unverified'], { models: 'fail' });
       expect(down.code).toBe(0);
       expect(down.error).toContain('warning: model-discovery-failed');
       expect(down.error).not.toContain('secret');
       expect(down.specs).toHaveLength(1);
+    });
+
+    it('requires --accept-unverified for unverifiable selections, and never lets it override blocking ones', async () => {
+      const noAccept = await go([...START, '--model', 'gpt-a'], { models: 'fail' });
+      expect(noAccept.code).toBe(1);
+      expect(noAccept.error).toContain('add --accept-unverified to run anyway');
+      expect(noAccept.error).toContain('issue: model-discovery-failed');
+      expect(noAccept.specs).toHaveLength(0);
+      const effortOnly = await go([...START, '--effort', 'low']);
+      expect(effortOnly.code).toBe(1);
+      expect(effortOnly.error).toContain('effort-unverified');
+      const accepted = await go([...START, '--effort', 'low', '--accept-unverified']);
+      expect(accepted.code).toBe(0);
+      expect(accepted.error).toContain('warning: effort-unverified');
+      for (const extra of [['--model', 'gpt-zzz'], ['--model', 'gpt-a', '--effort', 'max']]) {
+        const blocked = await go([...START, ...extra, '--accept-unverified']);
+        expect(blocked.code).toBe(1);
+        expect(blocked.error).toContain('[blocking]');
+        expect(blocked.specs).toHaveLength(0);
+      }
+      const clean = await go(START);
+      expect(clean.code).toBe(0);
+    });
+
+    it('requires a Git repository and explains how to fix it without initialising anything', async () => {
+      for (const [git, message] of [
+        ['not-a-repo', 'not inside a Git repository'],
+        ['git-not-installed', 'git is not installed'],
+        ['check-failed', 'Git repository check failed'],
+      ] as const) {
+        const r = await go(START, { git });
+        expect(r.code).toBe(1);
+        expect(r.error).toContain(message);
+        expect(r.specs).toHaveLength(0);
+      }
+      const hint = await go(START, { git: 'not-a-repo' });
+      expect(hint.error).toContain('Run `git init` yourself');
+    });
+
+    it('dry-run prints the plan, starts nothing and needs no --confirm', async () => {
+      const r = await go(['run', '--provider', 'codex', '--task', 'summarize the repo', '--dry-run', '--model', 'gpt-a', '--effort', 'low']);
+      expect(r.code).toBe(0);
+      expect(r.specs).toHaveLength(0);
+      expect(r.out).toContain('run plan (dry run, no agent started)');
+      expect(r.out).toContain('git: repo');
+      expect(r.out).toContain('sandbox: read-only');
+      expect(r.out).toContain('login: subscription login');
+      expect(r.out).toContain('model: gpt-a (verified)');
+      expect(r.out).toContain('task: 18 characters');
+      expect(r.out).toContain('requires: --confirm\n');
+      expect(r.out).toContain('verdict: would run');
+      expect(r.out).not.toContain('summarize');
+    });
+
+    it('dry-run reports refusals with exit 1, including needed acceptance flags', async () => {
+      const outside = await go(['run', '--provider', 'codex', '--task', 'x', '--dry-run'], { git: 'not-a-repo' });
+      expect(outside.code).toBe(1);
+      expect(outside.out).toContain('verdict: would refuse: the working directory is not inside a Git repository');
+      expect(outside.specs).toHaveLength(0);
+      const unverified = await go(['run', '--provider', 'codex', '--task', 'x', '--dry-run', '--model', 'gpt-a'], { models: 'fail' });
+      expect(unverified.code).toBe(1);
+      expect(unverified.out).toContain('requires: --confirm, --accept-unverified');
+      expect(unverified.out).toContain('would refuse: the model/effort selection could not be verified');
+      const accepted = await go(['run', '--provider', 'codex', '--task', 'x', '--dry-run', '--model', 'gpt-a', '--accept-unverified'], { models: 'fail' });
+      expect(accepted.code).toBe(0);
+      const blocked = await go(['run', '--provider', 'codex', '--task', 'x', '--dry-run', '--model', 'gpt-zzz', '--accept-unverified']);
+      expect(blocked.code).toBe(1);
+      expect(blocked.out).toContain('issue: model-not-listed [blocking]');
+      expect(blocked.out).not.toContain('--accept-unverified\n');
     });
 
     it('uses fixed messages for runner failures and never shows raw output', async () => {

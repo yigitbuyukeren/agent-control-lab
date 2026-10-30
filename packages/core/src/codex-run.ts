@@ -1,5 +1,6 @@
 import { realpath, stat } from 'node:fs/promises';
 import type { AuthStatus } from './auth.ts';
+import type { GitState } from './git-preflight.ts';
 import { runProcess, type ProcessRunner } from './process-runner.ts';
 import type { Selection, SelectionIssue } from './selection.ts';
 
@@ -51,28 +52,46 @@ export async function validateWorkingDir(dir: string): Promise<string | undefine
 
 export type RefusalReason =
   | 'task-invalid'
+  | 'not-a-git-repo'
+  | 'git-not-installed'
+  | 'git-check-failed'
   | 'codex-not-installed'
   | 'not-logged-in'
   | 'login-state-unknown'
   | 'api-key-login'
   | 'login-method-unknown'
-  | 'selection-blocked';
+  | 'selection-blocked'
+  | 'unverified-selection';
 
 export type RunPlan =
   | { readonly ok: true; readonly warnings: readonly SelectionIssue[] }
   | { readonly ok: false; readonly reason: RefusalReason; readonly issues: readonly SelectionIssue[] };
 
-/** Pure preflight: only a subscription login with no blocking selection issue may run. */
-export function planCodexRun(input: { task: string; auth: AuthStatus; selection: Selection }): RunPlan {
+/**
+ * Pure preflight: a Git work tree, a subscription login and no blocking selection issue are
+ * required; unverified (non-blocking) issues additionally need an explicit acceptance.
+ * Blocking issues can never be accepted away.
+ */
+export function planCodexRun(input: {
+  task: string;
+  auth: AuthStatus;
+  selection: Selection;
+  git: GitState;
+  acceptUnverified: boolean;
+}): RunPlan {
   const refuse = (reason: RefusalReason, issues: readonly SelectionIssue[] = []): RunPlan => ({ ok: false, reason, issues });
   const { auth, selection } = input;
   if (!validateTask(input.task)) return refuse('task-invalid');
+  if (input.git === 'not-a-repo') return refuse('not-a-git-repo');
+  if (input.git === 'git-not-installed') return refuse('git-not-installed');
+  if (input.git === 'check-failed') return refuse('git-check-failed');
   if (auth.state === 'not-installed') return refuse('codex-not-installed');
   if (auth.state === 'logged-out') return refuse('not-logged-in');
   if (auth.state !== 'logged-in') return refuse('login-state-unknown');
   if (auth.method === 'api-key') return refuse('api-key-login');
   if (auth.method !== 'subscription') return refuse('login-method-unknown');
   if (selection.blocked) return refuse('selection-blocked', selection.issues.filter((i) => i.blocking));
+  if (selection.issues.length > 0 && !input.acceptUnverified) return refuse('unverified-selection', selection.issues);
   return { ok: true, warnings: selection.issues };
 }
 

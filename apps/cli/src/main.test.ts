@@ -532,6 +532,7 @@ describe('cli', () => {
     it('uses fixed messages for runner failures and rejects bad options before anything runs', async () => {
       const cases: [ProcessOutcome, string, number][] = [
         [{ kind: 'completed', exitCode: 1, stdout: 'sk-leak', truncated: false }, 'claude run failed', 1],
+        [{ kind: 'completed', exitCode: 0, stdout: claudeJson('<invoke name="Glob"></invoke>'), truncated: false }, 'claude answered with tool-call text only', 1],
         [{ kind: 'timeout' }, 'claude run timed out', 1],
         [{ kind: 'cancelled' }, 'claude run cancelled', 130],
         [{ kind: 'spawn-failed' }, 'claude could not be started', 1],

@@ -165,9 +165,25 @@ export function planClaudeRun(input: {
 /** Models the response itself reports as used; `undefined` means UNKNOWN (never guessed from the request). */
 export type ClaudeRunOutcome =
   | Exclude<CodexRunOutcome, { kind: 'completed' }>
+  /** The whole answer was tool-call markup. No tool exists in this run, so nothing was executed and there is no answer. */
+  | { readonly kind: 'tool-call-text' }
   | { readonly kind: 'completed'; readonly output: string; readonly truncated: boolean; readonly usedModels?: readonly string[] };
 
 const MAX_USED_MODELS = 8;
+
+const TOOL_TAG = '(?:antml:)?(?:function_calls|invoke|tool_call|tool_use)';
+
+/**
+ * True when the entire answer is a tool-call block (`<invoke name="Glob">...`) and nothing else. The run has no
+ * tools (`--tools ""`), so such text is the model imitating a call, never a tool result. Markup inside prose, a
+ * code fence or next to other text is a normal answer and is not matched.
+ */
+export function isToolCallOnly(text: string): boolean {
+  const t = text.trim();
+  if (!new RegExp(`^<${TOOL_TAG}\\b`).test(t)) return false;
+  const stripped = t.replace(new RegExp(`<${TOOL_TAG}\\b[^>]*>[\\s\\S]*?(?:</${TOOL_TAG}>|$)`, 'g'), '').replace(new RegExp(`</${TOOL_TAG}>`, 'g'), '').trim();
+  return stripped === '';
+}
 
 /**
  * Reads `--output-format json`. Only the answer text and the keys of `modelUsage` are kept; the session id,
@@ -233,6 +249,7 @@ export async function runClaude(request: ClaudeRunRequest, deps: ClaudeRunDeps =
       const parsed = parseClaudeJson(outcome.stdout);
       if (parsed === undefined) return { kind: 'failed' };
       const text = sanitize(parsed.text);
+      if (isToolCallOnly(text)) return { kind: 'tool-call-text' };
       const cut = Buffer.byteLength(text) > MAX_RUN_OUTPUT_BYTES;
       return {
         kind: 'completed',

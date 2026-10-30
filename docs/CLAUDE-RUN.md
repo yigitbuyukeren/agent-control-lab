@@ -93,3 +93,11 @@ field are dropped as soon as they are parsed; raw JSON is never printed, logged 
   prints it under each completed Claude step, outside the answer. Codex steps have no such line.
 - The shape follows the documented `claude -p --output-format json` result; it was not observed against a real
   call here (no model calls are made in tests), so a CLI change shows up as a failed step, not a wrong model.
+
+## Answers that are only a tool call
+
+The run has no tools (`--tools ""`), so nothing in it can execute a tool. A model can still write text that looks
+like a call (`<invoke name="Glob">...`). If the **whole** answer is such a block (`invoke`, `function_calls`,
+`tool_call`, `tool_use`), the step fails with a fixed message ("answered with tool-call text only ... nothing was
+executed and there is no answer") instead of being reported as completed; no model line is printed and nothing is
+retried. The same markup inside prose, a code fence or beside other text, and any other XML, is a normal answer.

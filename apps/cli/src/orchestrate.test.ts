@@ -189,6 +189,17 @@ describe('orchestrate --confirm', () => {
     expect(unknown.out).not.toContain('SESSION-SECRET');
   });
 
+  it('fails the step, with a fixed reason, when the plan is only tool-call text', async () => {
+    const call = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '<invoke name="Glob"></invoke>', modelUsage: { 'claude-sonnet-5-5': {} } });
+    const r = await go(CONFIRM, { outcomes: [done(call)] });
+    expect(r.code).toBe(1);
+    expect(r.specs.map((s) => s.command)).toEqual(['claude']);
+    expect(r.out).toMatch(/plan\s+claude\s+failed/);
+    expect(r.out).toContain('tool-call text only');
+    expect(r.out).not.toContain('<invoke');
+    expect(r.out).not.toContain('model used');
+  });
+
   it('keeps the plan and reports a partial failure when the review fails', async () => {
     const r = await go(CONFIRM, { outcomes: [done('PLAN\n'), { kind: 'completed', exitCode: 1, stdout: 'raw sk-secret', truncated: false }] });
     expect(r.code).toBe(1);

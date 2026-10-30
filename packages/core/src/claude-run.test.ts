@@ -8,6 +8,7 @@ import {
   planClaudeRun,
   runClaude,
   parseClaudeJson,
+  isToolCallOnly,
 } from './claude-run.ts';
 import { claudeRegistry } from './models.ts';
 import type { ProcessOutcome, ProcessSpec } from './process-runner.ts';
@@ -45,6 +46,29 @@ describe('parseClaudeJson', () => {
     for (const bad of ['plain text', '', '[]', '{}', 'null', JSON.stringify({ type: 'result', is_error: true, result: 'x' }), JSON.stringify({ type: 'result', subtype: 'error_max_turns', result: 'x' }), JSON.stringify({ type: 'result', result: 5 })]) {
       expect(parseClaudeJson(bad)).toBeUndefined();
     }
+  });
+});
+
+describe('isToolCallOnly', () => {
+  it('matches an answer that is only tool-call markup', () => {
+    for (const t of [
+      '<invoke name="Glob">\n<parameter name="pattern">**/*.ts</parameter>\n</invoke>',
+      '<function_calls><invoke name="Glob"></invoke></function_calls>',
+      '  <invoke name="Glob">\n<parameter name="pattern">*</parameter>',
+      '<invoke name="A"></invoke>\n<invoke name="B"></invoke>',
+    ]) expect(isToolCallOnly(t)).toBe(true);
+  });
+
+  it('leaves legitimate XML, code and prose about tool calls alone', () => {
+    for (const t of [
+      'Glob lists files.',
+      'Use it like this:\n<invoke name="Glob"></invoke>',
+      '```xml\n<invoke name="Glob"></invoke>\n```',
+      '<invoke name="Glob"></invoke>\nThat is the call syntax.',
+      '<project><invoke>x</invoke></project>',
+      '<config><name>a</name></config>',
+      '',
+    ]) expect(isToolCallOnly(t)).toBe(false);
   });
 });
 
@@ -215,6 +239,19 @@ describe('runClaude (mock runner)', () => {
     const { spec } = await run({ kind: 'completed', exitCode: 0, stdout: ok('x'), truncated: false });
     expect(spec).toMatchObject({ command: 'claude', cwd: '/work', input: 'hello', maxOutputBytes: 80 * 1024 });
     expect(spec.env).toEqual({ PATH: '/bin' });
+  });
+
+  it('reports tool-call-only text as its own failure, not as a completed answer, without retrying', async () => {
+    const calls: ProcessSpec[] = [];
+    const result = await runClaude(
+      { task: 'explain in one sentence', cwd: '/work', selection: selectionFor(), timeoutMs: 1000 },
+      { runner: (s) => { calls.push(s); return Promise.resolve({ kind: 'completed', exitCode: 0, stdout: ok('<invoke name="Glob">\n<parameter name="pattern">*</parameter>\n</invoke>', { 'claude-sonnet-5-5': {} }), truncated: false }); }, env: { PATH: '/bin' } },
+    );
+    expect(result).toEqual({ kind: 'tool-call-text' });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args).toContain('');
+    const xml = await run({ kind: 'completed', exitCode: 0, stdout: ok('<config><name>a</name></config>'), truncated: false });
+    expect(xml.result).toMatchObject({ kind: 'completed', output: '<config><name>a</name></config>' });
   });
 
   it('never carries the session id or other envelope fields, and shows UNKNOWN when no model is reported', async () => {

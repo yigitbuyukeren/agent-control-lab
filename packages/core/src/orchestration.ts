@@ -8,6 +8,7 @@ export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeo
 /** What one step reports; a step never throws into the executor and never surfaces raw errors. */
 export type StepOutcome =
   | Exclude<CodexRunOutcome, { kind: 'completed' }>
+  | { readonly kind: 'tool-call-text' }
   | {
       readonly kind: 'completed';
       readonly output: string;
@@ -28,6 +29,7 @@ export const STEP_ERRORS: Record<Exclude<StepOutcome['kind'], 'completed' | 'rej
   cancelled: 'the step was cancelled',
   'not-installed': 'the provider CLI is not installed',
   'spawn-failed': 'the provider CLI could not be started',
+  'tool-call-text': 'the model answered with tool-call text only; this run has no tools, nothing was executed and there is no answer',
 };
 
 /** Largest output one step may hand to the next one. */

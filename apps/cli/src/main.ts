@@ -392,7 +392,8 @@ function parseRunArgs(args: readonly string[]): RunArgs | string {
 }
 
 
-const RUN_FAILURES: Record<Exclude<CodexRunOutcome['kind'], 'completed'>, string> = {
+const RUN_FAILURES: Record<Exclude<CodexRunOutcome['kind'], 'completed'> | 'tool-call-text', string> = {
+  'tool-call-text': 'codex answered with tool-call text only; this run has no tools, nothing was executed and there is no answer',
   failed: 'codex run failed',
   timeout: 'codex run timed out',
   cancelled: 'codex run cancelled',

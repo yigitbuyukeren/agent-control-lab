@@ -66,7 +66,15 @@ export function stepDetails(sp: StepPreflight): string {
   return plan?.ok === false ? plan.issues.map((i) => `      issue: ${describeIssue(i)}\n`).join('') : '';
 }
 
-function pinReason(flag: string, step: SelectionStep, fromFlag: boolean, value: string, policy?: { name: string; note: string }): string {
+function pinReason(
+  flag: string,
+  step: SelectionStep,
+  fromFlag: boolean,
+  value: string,
+  policy?: { name: string; note: string },
+  routing?: { note: string },
+): string {
+  if (!fromFlag && routing !== undefined) return `adaptive routing: ${routing.note}`;
   if (!fromFlag && policy !== undefined) return `policy ${policy.name}: ${policy.note}`;
   if (!fromFlag) return 'no flag: the provider default is kept (which model or level that is, is decided by the provider and not known here)';
   return value === 'auto'
@@ -87,7 +95,8 @@ export function selectionLines(sp: StepPreflight): string {
         ? 'nothing pinned, nothing to verify'
         : 'verified';
   return (
-    `      model: ${describePinned(selection.model)}; reason: ${pinReason('--step-model', sp.step, modelFromFlag, request.model)}\n` +
+    `      model: ${describePinned(selection.model)}; reason: ${pinReason('--step-model', sp.step, modelFromFlag, request.model, undefined, sp.requested.routing)}\n` +
+    (sp.requested.routing === undefined ? '' : sp.requested.routing.evidence.map((e) => `      evidence: ${e}\n`).join('')) +
     `      effort: ${describePinned(selection.effort)}; reason: ${pinReason('--step-effort', sp.step, effortFromFlag, request.effort, sp.requested.policy)}\n` +
     `      verification: ${status}\n` +
     selection.issues.map((i) => `      selection issue: ${describeIssue(i)}\n`).join('')

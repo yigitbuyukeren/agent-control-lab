@@ -44,6 +44,8 @@ export interface PolicyInput {
   readonly model: PolicyModel;
   /** Only a fresh or live reading; anything else must be passed as `unknown`. */
   readonly quota: QuotaLevel;
+  /** Adaptive routing only: the task text mentions a risky area (see `classifyTask`); +1. */
+  readonly sensitive?: boolean;
 }
 
 /** `effort` is absent when the policy keeps the provider default; `note` always says why. */
@@ -53,6 +55,41 @@ export interface PolicyDecision {
 }
 
 const KEPT = 'provider default kept';
+
+/** The level a policy aims for, as an index into the ladder, with the reasons. Needs no model. */
+export function wantedLevel(input: Omit<PolicyInput, 'model'>): { wanted: number; parts: string[] } {
+  let wanted = LADDER.indexOf(BASE_LEVEL[input.policy]);
+  const parts = [`${input.policy} base ${BASE_LEVEL[input.policy]}`];
+  if (input.policy === 'quality' && input.step === 'plan') {
+    wanted += 1;
+    parts.push('plan steers every later step +1');
+  }
+  if (input.size === 'large') {
+    wanted += 1;
+    parts.push('large task text +1');
+  } else if (input.size === 'small' && input.policy !== 'economy') {
+    wanted -= 1;
+    parts.push('small task text -1');
+  }
+  if (input.sensitive === true) {
+    wanted += 1;
+    parts.push('sensitive-looking task text +1');
+  }
+  if (input.quota === 'low' || input.quota === 'critical' || input.quota === 'exhausted') {
+    wanted -= 1;
+    parts.push(`quota ${input.quota} -1`);
+  } else if (input.quota === 'unknown') {
+    parts.push('quota unknown, not used');
+  } else {
+    parts.push('quota ok');
+  }
+  return { wanted, parts };
+}
+
+/** Level name for a ladder index, or undefined when it is off the ladder. */
+export function ladderLevel(index: number): string | undefined {
+  return LADDER[index];
+}
 
 /**
  * Chooses an effort only when it can be verified: the user pinned the model and the provider
@@ -72,27 +109,7 @@ export function decideEffort(input: PolicyInput): PolicyDecision {
   const lowest = levels[0];
   if (lowest === undefined) return { note: `${KEPT}: none of the supported efforts of ${model.id} is a level this tool can order` };
 
-  let wanted = LADDER.indexOf(BASE_LEVEL[input.policy]);
-  const parts = [`${input.policy} base ${BASE_LEVEL[input.policy]}`];
-  if (input.policy === 'quality' && input.step === 'plan') {
-    wanted += 1;
-    parts.push('plan steers every later step +1');
-  }
-  if (input.size === 'large') {
-    wanted += 1;
-    parts.push('large task text +1');
-  } else if (input.size === 'small' && input.policy !== 'economy') {
-    wanted -= 1;
-    parts.push('small task text -1');
-  }
-  if (input.quota === 'low' || input.quota === 'critical' || input.quota === 'exhausted') {
-    wanted -= 1;
-    parts.push(`quota ${input.quota} -1`);
-  } else if (input.quota === 'unknown') {
-    parts.push('quota unknown, not used');
-  } else {
-    parts.push('quota ok');
-  }
+  const { wanted, parts } = wantedLevel(input);
   const fit = levels.filter((level) => LADDER.indexOf(level) <= wanted).at(-1);
   const chosen = fit ?? lowest;
   if (fit === undefined) parts.push(`${chosen} is the lowest level ${model.id} supports`);

@@ -34,6 +34,8 @@ export interface StepRequest {
   readonly effortFromFlag: boolean;
   /** Set by the policy step: what the policy did for this step and why. */
   readonly policy?: { readonly name: string; readonly note: string };
+  /** Set by adaptive routing: what it decided for the model and the evidence behind it. */
+  readonly routing?: { readonly note: string; readonly evidence: readonly string[]; readonly pinned: boolean };
 }
 
 export type StepRequests = Readonly<Partial<Record<SelectionStep, StepRequest>>>;

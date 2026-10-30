@@ -174,3 +174,20 @@ passed between steps as `<<<BEGIN/END UNTRUSTED …>>>` blocks with a per-run no
 characters. The Claude reviewer has no tools, so it cannot be tricked into acting; the Codex writer is
 told to follow only what fits the task and the rules, and the inspection catches rule-breaking after the
 fact. That reduces risk; it does not remove it.
+
+## Model routing: `--model-routing auto|adaptive`
+
+`auto` (default) changes nothing. `adaptive` (both workflows) may pin a **Codex** model for a step you left on
+`auto`, and only from evidence:
+
+- **Evidence used:** the step's role and provider, the provider's own model list (`model/list` and the efforts it
+  reports), the target effort of `--policy` (adjusted by task-length size, a risky-keyword check such as
+  security/auth/migration/concurrency, and a fresh or live quota reading), and your manual flags.
+- **Rule:** a model is pinned only if it is the **single** listed model that supports the target effort, every other
+  listed model reports its efforts, and the list has at least two models. If every model qualifies, several do, none
+  does, the list is missing or a model reports no efforts, the provider default is kept and the reason is printed.
+  No quality or cost ranking is assumed, so nothing is chosen "because it is better".
+- **Claude:** never pinned automatically. No command proves which models the account can use, so this stays UNKNOWN.
+- **Manual wins:** a step with `--step-model` or `--step-effort` is left alone. Ultracode is never selected.
+- `--dry-run` prints, per step, the decision and `evidence:` lines (role, task heuristics, model list, target effort,
+  models supporting it). A pinned model comes from the account's own list, so it is not an unverified choice.

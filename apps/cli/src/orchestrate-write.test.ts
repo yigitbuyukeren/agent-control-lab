@@ -515,3 +515,15 @@ describe('plan-implement-review: --policy', () => {
     for (const spec of claude) expect(spec.args).not.toContain('--effort');
   });
 });
+
+describe('plan-implement-review: --model-routing adaptive', () => {
+  it('keeps Claude steps and a single-model Codex list on their defaults, and shows why', async () => {
+    const dry = await go([...ARGS(), '--dry-run', '--model-routing', 'adaptive']);
+    expect(dry.out).toContain('model routing: adaptive');
+    expect(dry.out.match(/claude access: UNKNOWN/g)).toHaveLength(2);
+    expect(dry.out).toContain('the list offers no alternative to choose between');
+    const real = await go([...WRITE(), '--model-routing', 'adaptive'], { onCodex: editFile() });
+    expect(real.code).toBe(0);
+    for (const spec of real.specs) expect(spec.args).not.toContain('--model');
+  });
+});

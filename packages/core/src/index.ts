@@ -42,6 +42,7 @@ export * from './claude-help.ts';
 export * from './selection.ts';
 export * from './step-selection.ts';
 export * from './step-policy.ts';
+export * from './step-router.ts';
 export * from './process-runner.ts';
 export * from './codex-run.ts';
 export * from './git-preflight.ts';

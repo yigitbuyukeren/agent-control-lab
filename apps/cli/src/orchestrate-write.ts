@@ -52,7 +52,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   const prep = await prepareWorkspace(cwd, gitDeps, { allowPartialIgnored: args.allowPartialIgnored === true });
   // The write target must be the worktree root itself, not a folder inside it.
   const atRoot = prep.ok ? relative(prep.before.root, cwd) === '' : prep.reason === 'workspace-rejected' && relative(prep.snapshot.root, cwd) === '';
-  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps);
+  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting);
   const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, implementPf, reviewPf] = pfs;
   if (planPf === undefined || implementPf?.codex === undefined || reviewPf === undefined) throw new Error('plan-implement-review needs plan, implement and review steps');
@@ -72,7 +72,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         `  workspace check: ${atRoot || !prep.ok ? workspaceVerdict(prep) : 'rejected: the workspace must be the worktree root'}\n` +
         (prep.ok || prep.reason === 'git-state-unreadable' ? '' : prep.problems.map((p) => `      ${WORKSPACE_PROBLEMS[p] ?? p}\n`).join('')) +
         `  timeout: ${String(args.timeoutMs / 1000)}s per step\n  task: ${String(args.task.length)} characters\n` +
-        policyLine(args.policy, chosen.quotaNote) +
+        policyLine(args.policy, chosen.quotaNote, args.modelRouting) +
         `  ${n(1)} plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
         selectionLines(planPf) +
         stepDetails(planPf) +

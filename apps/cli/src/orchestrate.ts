@@ -8,7 +8,10 @@ import {
   POLICY_NAMES,
   buildStepRequests,
   executeWorkflow,
+  isModelRouting,
   isPolicyName,
+  MODEL_ROUTINGS,
+  type ModelRouting,
   isWorkflowName,
   parseVerifyCommand,
   validateWorkingDir,
@@ -49,6 +52,8 @@ export interface OrchestrateArgs {
   readonly acceptUnverified: boolean;
   /** Cost policy for steps whose effort was not set manually; manual step settings always win. */
   readonly policy: PolicyName;
+  /** `adaptive` lets evidence from the provider's model list pick a model for steps left on `auto`; default `auto` changes nothing. */
+  readonly modelRouting?: ModelRouting;
   /** Model and effort asked for each step (`--step-model`, `--step-effort`); `auto` keeps the provider default. */
   readonly steps: StepRequests;
   /** `plan-implement-review` only: the existing isolated worktree the implementation may write to. */
@@ -75,6 +80,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   let allowPartialIgnored = false;
   let workspace: string | undefined;
   let policy: PolicyName = DEFAULT_POLICY;
+  let modelRouting: ModelRouting = 'auto';
   const stepModels: string[] = [];
   const stepEfforts: string[] = [];
   let verifyText: string | undefined;
@@ -101,6 +107,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       const value = args[(i += 1)];
       if (value === undefined || !isPolicyName(value)) return `--policy must be one of: ${POLICY_NAMES.join(', ')}`;
       policy = value;
+    } else if (arg === '--model-routing') {
+      const value = args[(i += 1)];
+      if (value === undefined || !isModelRouting(value)) return `--model-routing must be one of: ${MODEL_ROUTINGS.join(', ')}`;
+      modelRouting = value;
     } else if (arg === '--workspace') {
       workspace = args[(i += 1)];
       if (workspace === undefined || workspace === '') return '--workspace needs an existing Git worktree directory';
@@ -145,7 +155,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
   if (confirmWrite || confirmVerify || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
     return '--workspace, --verify-command, --confirm-verify, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
@@ -153,15 +163,20 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';
   }
-  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, steps };
+  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, steps };
 }
 
 export function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
 }
 
-export function policyLine(policy: PolicyName, quotaNote: string): string {
-  return `  policy: ${policy}; manual --step-model/--step-effort settings win; it only sets an effort it can verify and never picks a model or ultracode; quota ${quotaNote}\n`;
+export function policyLine(policy: PolicyName, quotaNote: string, routing: ModelRouting = 'auto'): string {
+  return (
+    `  policy: ${policy}; manual --step-model/--step-effort settings win; it only sets an effort it can verify and never picks a model or ultracode; quota ${quotaNote}\n` +
+    (routing === 'adaptive'
+      ? '  model routing: adaptive; picks a Codex model only when the provider\'s own list leaves exactly one that supports the target effort, never a Claude model, never by an invented ranking; otherwise the provider default is kept\n'
+      : '')
+  );
 }
 
 export function formatStep(step: StepResult, index: number, total: number): string {
@@ -212,7 +227,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     return 1;
   }
   // Every step's own safety checks run first, and nothing starts unless all of them pass.
-  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps);
+  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting);
   const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, reviewPf] = pfs;
   if (planPf?.claude === undefined || reviewPf?.codex === undefined) throw new Error('plan-review needs a claude and a codex step');
@@ -223,7 +238,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
       'orchestrate plan (dry run, no agent started)\n' +
         `  workflow: ${args.workflow}\n  cwd: ${cwd}\n  timeout: ${String(args.timeoutMs / 1000)}s per step\n` +
         `  task: ${String(args.task.length)} characters\n` +
-        policyLine(args.policy, chosen.quotaNote) +
+        policyLine(args.policy, chosen.quotaNote, args.modelRouting) +
         `  step 1/2 plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
         selectionLines(planPf) +
         stepDetails(planPf) +

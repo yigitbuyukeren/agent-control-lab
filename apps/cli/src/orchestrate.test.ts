@@ -53,6 +53,7 @@ async function go(
     env?: Record<string, string>;
     signal?: AbortSignal;
     onSpawn?: (spec: ProcessSpec) => void;
+    appServer?: () => AppServerProcess;
   } = {},
 ) {
   const specs: ProcessSpec[] = [];
@@ -66,7 +67,7 @@ async function go(
       { out: (t) => (out += t), error: (t) => (error += t) },
       {
         exec: over.exec ?? exec(),
-        appServer: modelServer,
+        appServer: over.appServer ?? modelServer,
         cwd: dir,
         env: over.env ?? { PATH: '/bin' },
         git: () => Promise.resolve(over.git ?? 'repo'),
@@ -331,5 +332,75 @@ describe('orchestrate --policy', () => {
     const r = await go([...CONFIRM, ...REVIEW_GPT, '--policy', 'quality']);
     for (const spec of r.specs) expect(spec.args).not.toContain('ultracode');
     expect(r.specs[0]?.args).not.toContain('--model');
+  });
+});
+
+describe('orchestrate --model-routing', () => {
+  const twoModels = (): AppServerProcess => {
+    let lineCb: (line: string) => void = () => undefined;
+    return {
+      send: (line) => {
+        const m = JSON.parse(line) as { id?: number; method: string };
+        if (m.id === undefined) return;
+        const eff = (...l: string[]) => l.map((reasoningEffort) => ({ reasoningEffort }));
+        const reply = m.method === 'model/list'
+          ? { result: { data: [{ model: 'gpt-a', supportedReasoningEfforts: eff('low', 'medium') }, { model: 'gpt-b', supportedReasoningEfforts: eff('low', 'medium', 'high') }], nextCursor: null } }
+          : { result: {} };
+        queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, ...reply })); });
+      },
+      onLine: (cb) => (lineCb = cb),
+      onExit: () => undefined,
+      kill: () => Promise.resolve(),
+    };
+  };
+  const risky = ['orchestrate', '--workflow', 'plan-review', '--task', 'fix the auth flag', '--policy', 'quality'];
+
+  it('defaults to auto and rejects unknown values', () => {
+    const base = ['--workflow', 'plan-review', '--task', 'x', '--dry-run'];
+    expect(parseOrchestrateArgs(base)).toMatchObject({ modelRouting: 'auto' });
+    expect(parseOrchestrateArgs([...base, '--model-routing', 'adaptive'])).toMatchObject({ modelRouting: 'adaptive' });
+    for (const bad of [['--model-routing'], ['--model-routing', 'smart'], ['--model-routing', 'ultracode']]) {
+      expect(typeof parseOrchestrateArgs([...base, ...bad])).toBe('string');
+    }
+  });
+
+  it('changes nothing without the option, even with a catalog that would allow a choice', async () => {
+    const r = await go([...risky, '--confirm'], { appServer: twoModels });
+    expect(r.specs[1]?.args).not.toContain('-m');
+    const dry = await go([...risky, '--dry-run'], { appServer: twoModels });
+    expect(dry.out).not.toContain('model routing');
+    expect(dry.out).not.toContain('adaptive routing');
+  });
+
+  it('pins the only Codex model that supports the target effort, shows the evidence and starts it', async () => {
+    const dry = await go([...risky, '--dry-run', '--model-routing', 'adaptive'], { appServer: twoModels });
+    expect(dry.out).toContain('model routing: adaptive');
+    expect(dry.out).toContain('model: gpt-b (verified); reason: adaptive routing: gpt-b: the only listed model that supports high');
+    expect(dry.out).toContain('evidence: models supporting high: gpt-b');
+    expect(dry.out).toContain('evidence: target effort: high (quality base high');
+    expect(dry.out).toContain('effort: high (verified); reason: policy quality: high');
+    expect(dry.out).toContain('verdict: would run');
+    const live = await go([...risky, '--confirm', '--model-routing', 'adaptive'], { appServer: twoModels });
+    expect(live.specs[1]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-b', '-c', 'model_reasoning_effort=high']));
+    expect(live.specs[0]?.args).not.toContain('--model');
+  });
+
+  it('keeps the Claude default with UNKNOWN access, and the Codex default when nothing is distinguishable', async () => {
+    const dry = await go([...risky.slice(0, 4), 'rename a variable', '--dry-run', '--model-routing', 'adaptive'], { appServer: twoModels });
+    expect(dry.out).toContain('adaptive routing: provider default kept: a Claude model cannot be shown to be accessible');
+    expect(dry.out).toContain('claude access: UNKNOWN');
+    expect(dry.out).toMatch(/adaptive routing: provider default kept: .*(supports|no listed model)/);
+    const one = await go([...risky, '--dry-run', '--model-routing', 'adaptive']);
+    expect(one.out).toContain('the list offers no alternative to choose between');
+  });
+
+  it('lets manual choices win and never selects ultracode', async () => {
+    const manual = await go([...risky, '--dry-run', '--model-routing', 'adaptive', '--step-model', 'review=gpt-a', '--step-effort', 'plan=low'], { appServer: twoModels });
+    expect(manual.out).toContain('reason: requested with --step-model review=gpt-a');
+    expect(manual.out).toContain('adaptive routing: not applied: the effort was set manually');
+    expect(manual.out).toContain('model: gpt-a');
+    expect(manual.out).not.toMatch(/model: gpt-b/);
+    const live = await go([...risky, '--confirm', '--model-routing', 'adaptive'], { appServer: twoModels });
+    for (const spec of live.specs) expect(spec.args.join(' ')).not.toContain('ultracode');
   });
 });

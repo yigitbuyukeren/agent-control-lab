@@ -1,14 +1,17 @@
 import {
   claudeRegistry,
   classifyQuota,
+  classifyTask,
   decideEffort,
   discoverCodexModels,
   estimateTaskSize,
   readAllQuotas,
+  routeModel,
   resolveCacheDir,
   selectionSteps,
   type CodexModelsResult,
   type ModelCapability,
+  type ModelRouting,
   type PolicyName,
   type ProviderQuota,
   type QuotaLevel,
@@ -48,8 +51,10 @@ export async function applyPolicy(
   task: string,
   requests: StepRequests,
   deps: PolicyDeps,
+  routing: ModelRouting = 'auto',
 ): Promise<PolicyResult> {
   const size = estimateTaskSize(task);
+  const kind = routing === 'adaptive' ? classifyTask(task) : 'general';
   let catalog: Promise<CodexModelsResult> | undefined;
   const codexCatalog = (): Promise<CodexModelsResult> => (catalog ??= discoverCodexModels(deps.appServer));
   let quotas: Promise<ProviderQuota[]> | undefined;
@@ -63,8 +68,33 @@ export async function applyPolicy(
   const result: Partial<Record<keyof StepRequests, StepRequest>> = {};
   let quotaRead = false;
   for (const { step, provider } of selectionSteps(workflow)) {
-    const current = requests[step];
+    let current = requests[step];
     if (current === undefined) continue;
+    if (routing === 'adaptive') {
+      if (current.modelFromFlag || current.effortFromFlag) {
+        current = {
+          ...current,
+          routing: {
+            note: current.modelFromFlag ? 'not applied: the model was set manually' : 'not applied: the effort was set manually; the model stays with the provider default',
+            evidence: [],
+            pinned: false,
+          },
+        };
+      } else {
+        const list = provider === 'codex' ? await codexCatalog() : undefined;
+        let routeQuota: QuotaLevel = 'unknown';
+        if (list?.state === 'ok' && list.models.length >= 2) {
+          quotaRead = true;
+          routeQuota = reliableQuota((await readQuotas()).find((q) => q.provider === provider));
+        }
+        const decision = routeModel({ step, provider, policy, size, kind, catalog: list, quota: routeQuota });
+        current = {
+          ...current,
+          request: decision.model === undefined ? current.request : { ...current.request, model: decision.model },
+          routing: { note: decision.note, evidence: decision.evidence, pinned: decision.model !== undefined },
+        };
+      }
+    }
     if (current.effortFromFlag) {
       result[step] = { ...current, policy: { name: policy, note: 'not applied: the effort was set manually' } };
       continue;
@@ -88,6 +118,7 @@ export async function applyPolicy(
       size,
       model: pinned ? { kind: 'pinned', id: current.request.model, capability } : { kind: 'auto' },
       quota,
+      ...(kind === 'sensitive' ? { sensitive: true } : {}),
     });
     result[step] = {
       ...current,

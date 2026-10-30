@@ -11,6 +11,7 @@ describe('parseCommand', () => {
     expect(parseCommand(['auth-status'])).toEqual({ ok: true, value: 'auth-status' });
     expect(parseCommand(['statusline-collect'])).toEqual({ ok: true, value: 'statusline-collect' });
     expect(parseCommand(['route'])).toEqual({ ok: true, value: 'route' });
+    expect(parseCommand(['models'])).toEqual({ ok: true, value: 'models' });
     expect(parseCommand(['quota'])).toEqual({ ok: true, value: 'quota' });
     expect(parseCommand(['providers'])).toEqual({ ok: true, value: 'providers' });
   });

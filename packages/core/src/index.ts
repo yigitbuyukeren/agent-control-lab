@@ -11,7 +11,7 @@ export function getInfo(env: { node: string; platform: string }): LabInfo {
   return { name: 'agent-control-lab', version: VERSION, ...env };
 }
 
-export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route'> {
+export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models'> {
   const [first] = argv;
   if (first === undefined || first === 'help' || first === '--help' || first === '-h') {
     return ok('help');
@@ -23,6 +23,7 @@ export function parseCommand(argv: readonly string[]): Result<'help' | 'version'
   if (first === 'quota') return ok('quota');
   if (first === 'statusline-collect') return ok('statusline-collect');
   if (first === 'route') return ok('route');
+  if (first === 'models') return ok('models');
   return err(`unknown command: ${first}`);
 }
 
@@ -33,3 +34,5 @@ export * from './claude-quota.ts';
 export * from './claude-cache.ts';
 export * from './quota-model.ts';
 export * from './routing.ts';
+export * from './models.ts';
+export * from './app-server-client.ts';

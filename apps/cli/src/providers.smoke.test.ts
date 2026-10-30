@@ -132,4 +132,21 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
       rmSync(cache, { recursive: true, force: true });
     }
   });
+
+  it('models lists the documented Claude registry and reports Codex not installed when absent', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'acl-smoke-models-'));
+    try {
+      const env: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined && key.toLowerCase() !== 'path') env[key] = value;
+      }
+      env['PATH'] = join(cache, 'no-binaries-here');
+      const out = execFileSync(process.execPath, [bin, 'models'], { env, encoding: 'utf8', timeout: 20000 });
+      expect(out).toContain('documented; account access not verified');
+      expect(out).toContain('claude-opus-5-5');
+      expect(out).toContain('not installed');
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
+  });
 });

@@ -11,13 +11,17 @@ export type ProviderPreference = RouteProvider | 'auto';
 /** Only `available` (installed and logged in) is eligible; `unknown` is never assumed usable. */
 export type Availability = 'available' | 'not-installed' | 'logged-out' | 'unknown';
 
-export type QuotaLevel = 'ok' | 'low' | 'exhausted' | 'unknown';
+/**
+ * `critical` (default 95%+) is a warning level, not real exhaustion: the provider may still
+ * work. Only a known 100% window is `exhausted`.
+ */
+export type QuotaLevel = 'ok' | 'low' | 'critical' | 'exhausted' | 'unknown';
 
 export interface RoutePolicy {
   /** Preferred provider order per task kind; earlier wins ties. */
   readonly affinity: Readonly<Record<TaskKind, readonly RouteProvider[]>>;
-  /** A known window at or above this percent counts as exhausted. */
-  readonly exhaustedAtPercent: number;
+  /** A known window at or above this percent counts as critical (still usable). */
+  readonly criticalAtPercent: number;
   /** A known window at or above this percent counts as low. */
   readonly lowAtPercent: number;
 }
@@ -31,7 +35,7 @@ export const defaultPolicy: RoutePolicy = {
     debugging: ['codex', 'claude'],
     review: ['codex', 'claude'],
   },
-  exhaustedAtPercent: 95,
+  criticalAtPercent: 95,
   lowAtPercent: 80,
 };
 
@@ -42,6 +46,9 @@ export interface RouteInput {
   readonly quota: Readonly<Partial<Record<RouteProvider, ProviderQuota>>>;
 }
 
+/** Usage at or above this percent is real exhaustion. */
+export const EXHAUSTED_AT_PERCENT = 100;
+
 export type RouteReason = 'user-preference' | 'task-affinity' | 'better-quota';
 export type ManualReason =
   | 'preferred-unavailable'
@@ -49,7 +56,7 @@ export type ManualReason =
   | 'no-available-provider'
   | 'all-available-quota-exhausted';
 export interface RouteCaveat {
-  readonly code: 'quota-unknown' | 'quota-low';
+  readonly code: 'quota-unknown' | 'quota-low' | 'quota-critical';
   readonly provider: RouteProvider;
 }
 
@@ -70,18 +77,20 @@ export function classifyQuota(quota: ProviderQuota | undefined, policy: RoutePol
   if (quota?.state !== 'ok') return 'unknown';
   const used = quota.windows.flatMap((w) => (w.usedPercent === undefined ? [] : [w.usedPercent]));
   const max = used.length === 0 ? undefined : Math.max(...used);
-  // A known-exhausted window is conclusive even if another window is unknown.
-  if (max !== undefined && max >= policy.exhaustedAtPercent) return 'exhausted';
+  // A known high window is conclusive even if another window is unknown.
+  if (max !== undefined && max >= EXHAUSTED_AT_PERCENT) return 'exhausted';
+  if (max !== undefined && max >= policy.criticalAtPercent) return 'critical';
   if (max === undefined || used.length < quota.windows.length) return 'unknown';
   return max >= policy.lowAtPercent ? 'low' : 'ok';
 }
 
-/** Lower is better. Known healthy beats known low beats unknown. */
-const TIER: Record<Exclude<QuotaLevel, 'exhausted'>, number> = { ok: 0, low: 1, unknown: 2 };
+/** Lower is better: known healthy, known low, unknown, then critical. */
+const TIER: Record<Exclude<QuotaLevel, 'exhausted'>, number> = { ok: 0, low: 1, unknown: 2, critical: 3 };
 
 function caveat(provider: RouteProvider, level: QuotaLevel): RouteCaveat[] {
   if (level === 'unknown') return [{ code: 'quota-unknown', provider }];
   if (level === 'low') return [{ code: 'quota-low', provider }];
+  if (level === 'critical') return [{ code: 'quota-critical', provider }];
   return [];
 }
 

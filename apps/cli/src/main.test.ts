@@ -114,6 +114,60 @@ describe('cli', () => {
     expect(out).toContain('Claude Code quota: unknown');
   });
 
+  describe('models', () => {
+    const modelServer = (): AppServerProcess => {
+      let lineCb: (line: string) => void = () => undefined;
+      return {
+        send: (line) => {
+          const m = JSON.parse(line) as { id?: number; method: string; params?: { cursor?: string } };
+          if (m.id === undefined) return;
+          const result =
+            m.method === 'initialize'
+              ? {}
+              : m.params?.cursor === 'p2'
+                ? { data: [{ model: 'gpt-b', supportedReasoningEfforts: [] }], nextCursor: null }
+                : {
+                    data: [{ model: 'gpt-a', displayName: 'A', defaultReasoningEffort: 'medium', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }] }],
+                    nextCursor: 'p2',
+                  };
+          queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, result })); });
+        },
+        onLine: (cb) => (lineCb = cb),
+        onExit: () => undefined,
+        kill: () => Promise.resolve(),
+      };
+    };
+    const call = async (argv: string[]) => {
+      let out = '';
+      let error = '';
+      const code = await run(argv, { out: (t) => (out += t), error: (t) => (error += t) }, { appServer: modelServer });
+      return { code, out, error };
+    };
+
+    it('lists documented Claude models as unverified and discovered Codex models with efforts', async () => {
+      const r = await call(['models']);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('Claude Code (documented; account access not verified)');
+      expect(r.out).toContain('claude-opus-5-5 (Opus 5.5): efforts unknown (documented levels: low, medium, high, xhigh, max)');
+      expect(r.out).toContain('gpt-a (A): efforts low, medium, default medium');
+      expect(r.out).toContain('gpt-b: efforts unknown');
+      expect(r.out).toContain('ultracode is an optional work mode, not an effort level');
+    });
+
+    it('check distinguishes supported, unsupported and unknown via exit codes', async () => {
+      expect(await call(['models', 'check', 'codex', 'gpt-a', 'medium'])).toMatchObject({ code: 0, out: 'supported (default)\n' });
+      expect(await call(['models', 'check', 'codex', 'gpt-a', 'high'])).toMatchObject({ code: 1, out: 'unsupported (supported: low, medium)\n' });
+      expect(await call(['models', 'check', 'codex', 'gpt-z', 'low'])).toMatchObject({ code: 3, out: 'unknown (model-not-listed)\n' });
+      expect(await call(['models', 'check', 'claude', 'claude-opus-5-5', 'high'])).toMatchObject({ code: 3, out: 'unknown (efforts-not-known)\n' });
+      expect(await call(['models', 'check', 'claude', 'claude-opus-5-5', 'ultracode'])).toMatchObject({ code: 3, out: 'unknown (invalid-effort)\n' });
+    });
+
+    it('rejects bad usage', async () => {
+      expect((await call(['models', 'check', 'claude'])).code).toBe(2);
+      expect((await call(['models', 'nope'])).code).toBe(2);
+    });
+  });
+
   describe('route --dry-run', () => {
     const NOW = new Date('2027-01-15T00:00:00Z');
     const exec: Exec = (command, args) => {
@@ -162,15 +216,21 @@ describe('cli', () => {
     });
 
     it('asks for manual selection when the preferred provider is exhausted', async () => {
-      const r = await route(['route', '--dry-run', '--task', 'review', '--prefer', 'codex'], 99);
+      const r = await route(['route', '--dry-run', '--task', 'review', '--prefer', 'codex'], 100);
       expect(r.out).toContain('manual-selection-required');
       expect(r.out).toContain('reason: preferred-quota-exhausted');
     });
 
     it('falls to the other provider when one is exhausted in auto mode', async () => {
-      const r = await route(['route', '--dry-run', '--task', 'review'], 99);
+      const r = await route(['route', '--dry-run', '--task', 'review'], 100);
       expect(r.out).toContain('recommended: claude');
       expect(r.out).toContain('caveat: quota-unknown (claude)');
+    });
+
+    it('keeps a critical (95%) provider usable but flags it', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'review', '--prefer', 'codex'], 96);
+      expect(r.out).toContain('recommended: codex');
+      expect(r.out).toContain('caveat: quota-critical (codex)');
     });
 
     it('requires --dry-run and a valid task and preference', async () => {

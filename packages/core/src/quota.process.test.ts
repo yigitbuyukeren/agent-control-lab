@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { discoverCodexModels } from './models.ts';
 import { createAppServerSpawn, readCodexQuota } from './quota.ts';
 
 const windows = process.platform === 'win32';
@@ -20,6 +21,13 @@ process.stdin.on('data', (d) => {
     const m = JSON.parse(buf.slice(0, i));
     buf = buf.slice(i + 1);
     if (process.env.ACL_FAKE_HANG) continue;
+    if (m.method === 'model/list') {
+      const second = m.params && m.params.cursor === 'p2';
+      console.log(JSON.stringify({ id: m.id, result: second
+        ? { data: [{ model: 'gpt-b', supportedReasoningEfforts: [] }], nextCursor: null }
+        : { data: [{ model: 'gpt-a', displayName: 'A', token: 'secret', defaultReasoningEffort: 'high',
+            supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }], nextCursor: 'p2' } }));
+    }
     if (m.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
     if (m.id === 2) console.log(JSON.stringify({ id: 2, result: { rateLimits: {
       planType: 'pro', primary: { usedPercent: 7, windowDurationMins: 300, resetsAt: 1800000000 } } } }));
@@ -82,6 +90,22 @@ describe('real process via fake codex shim', () => {
     const pidFile = join(dir, 'hang.pid');
     const spawnServer = createAppServerSpawn({ env: env({ ACL_PID_FILE: pidFile, ACL_FAKE_HANG: '1' }) });
     expect(await readCodexQuota(spawnServer, 1500)).toEqual({ state: 'error', error: 'timed out' });
+    expect(await dead(pidFile)).toBe(true);
+  });
+
+  it('discovers paginated models through the shim and cleans up', async () => {
+    const pidFile = join(dir, 'models.pid');
+    const spawnServer = createAppServerSpawn({ env: env({ ACL_PID_FILE: pidFile }) });
+    const result = await discoverCodexModels(spawnServer, 15_000);
+    expect(result.state === 'ok' && result.models.map((m) => m.id)).toEqual(['gpt-a', 'gpt-b']);
+    expect(JSON.stringify(result)).not.toContain('secret');
+    expect(await dead(pidFile)).toBe(true);
+  });
+
+  it('times out model discovery on a hung server and kills it', async () => {
+    const pidFile = join(dir, 'models-hang.pid');
+    const spawnServer = createAppServerSpawn({ env: env({ ACL_PID_FILE: pidFile, ACL_FAKE_HANG: '1' }) });
+    expect(await discoverCodexModels(spawnServer, 1500)).toEqual({ state: 'error', error: 'timed out' });
     expect(await dead(pidFile)).toBe(true);
   });
 

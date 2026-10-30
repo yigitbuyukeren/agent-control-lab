@@ -46,7 +46,9 @@ describe('classifyQuota', () => {
     expect(classifyQuota(quota('codex', [79.99]))).toBe('ok');
     expect(classifyQuota(quota('codex', [80]))).toBe('low');
     expect(classifyQuota(quota('codex', [94.99]))).toBe('low');
-    expect(classifyQuota(quota('codex', [95]))).toBe('exhausted');
+    expect(classifyQuota(quota('codex', [95]))).toBe('critical');
+    expect(classifyQuota(quota('codex', [99.99]))).toBe('critical');
+    expect(classifyQuota(quota('codex', [100]))).toBe('exhausted');
   });
   it('treats real 0% as ok but missing, partial, stale or absent data as unknown', () => {
     expect(classifyQuota(quota('codex', [0, 0]))).toBe('ok');
@@ -56,8 +58,9 @@ describe('classifyQuota', () => {
     expect(classifyQuota(quota('codex', [10], 'unknown'))).toBe('unknown');
     expect(classifyQuota(undefined)).toBe('unknown');
   });
-  it('lets a known exhausted window win over an unknown one', () => {
-    expect(classifyQuota(quota('codex', [99, null]))).toBe('exhausted');
+  it('lets a known high window win over an unknown one', () => {
+    expect(classifyQuota(quota('codex', [99, null]))).toBe('critical');
+    expect(classifyQuota(quota('codex', [100, null]))).toBe('exhausted');
   });
 });
 
@@ -101,9 +104,9 @@ describe('routeTask: auto', () => {
     });
   });
 
-  it('skips exhausted providers and ignores unavailable ones', () => {
+  it('skips truly exhausted providers and ignores unavailable ones', () => {
     expect(
-      routeTask(input({ task: 'review', quota: { claude: quota('claude', [5]), codex: quota('codex', [96]) } })),
+      routeTask(input({ task: 'review', quota: { claude: quota('claude', [5]), codex: quota('codex', [100]) } })),
     ).toMatchObject({ provider: 'claude' });
     expect(routeTask(input({ task: 'planning', availability: both('logged-out', 'available') }))).toMatchObject({
       provider: 'codex',
@@ -119,8 +122,19 @@ describe('routeTask: auto', () => {
       kind: 'manual-selection-required',
     });
     expect(
-      routeTask(input({ quota: { claude: quota('claude', [99]), codex: quota('codex', [100]) } })),
+      routeTask(input({ quota: { claude: quota('claude', [100]), codex: quota('codex', [100]) } })),
     ).toEqual({ kind: 'manual-selection-required', reasons: ['all-available-quota-exhausted'] });
+  });
+
+  it('treats critical (95%+) as a warning: still usable, ranked last, flagged', () => {
+    const onlyCritical = routeTask(
+      input({ task: 'review', quota: { claude: quota('claude', [99]), codex: quota('codex', [96]) } }),
+    );
+    expect(onlyCritical).toMatchObject({ kind: 'recommend', provider: 'codex', caveats: [{ code: 'quota-critical', provider: 'codex' }] });
+    const vsUnknown = routeTask(
+      input({ task: 'review', quota: { claude: quota('claude', [null]), codex: quota('codex', [97]) } }),
+    );
+    expect(vsUnknown).toMatchObject({ provider: 'claude' });
   });
 });
 
@@ -138,8 +152,11 @@ describe('routeTask: user preference', () => {
       reasons: ['preferred-unavailable'],
     });
     expect(
-      routeTask(input({ preference: 'codex', quota: { claude: quota('claude', [1]), codex: quota('codex', [97]) } })),
+      routeTask(input({ preference: 'codex', quota: { claude: quota('claude', [1]), codex: quota('codex', [100]) } })),
     ).toEqual({ kind: 'manual-selection-required', reasons: ['preferred-quota-exhausted'] });
+    expect(
+      routeTask(input({ preference: 'codex', quota: { codex: quota('codex', [97]) } })),
+    ).toMatchObject({ kind: 'recommend', provider: 'codex', caveats: [{ code: 'quota-critical', provider: 'codex' }] });
   });
 
   it('adds a caveat for unknown or low quota on the preferred provider', () => {
@@ -159,10 +176,11 @@ describe('routeTask: purity and policy', () => {
   });
 
   it('accepts a custom policy', () => {
-    const policy: RoutePolicy = { ...defaultPolicy, affinity: { ...defaultPolicy.affinity, review: ['claude', 'codex'] }, exhaustedAtPercent: 50 };
+    const policy: RoutePolicy = { ...defaultPolicy, affinity: { ...defaultPolicy.affinity, review: ['claude', 'codex'] }, criticalAtPercent: 50 };
     expect(routeTask(input({ task: 'review' }), policy)).toMatchObject({ provider: 'claude' });
     expect(routeTask(input({ quota: { claude: quota('claude', [60]), codex: quota('codex', [60]) } }), policy)).toMatchObject({
-      kind: 'manual-selection-required',
+      kind: 'recommend',
+      caveats: [{ code: 'quota-critical' }],
     });
   });
 });

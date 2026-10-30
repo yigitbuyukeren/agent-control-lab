@@ -6,9 +6,13 @@ import {
   getInfo,
   parseClaudeStatusLine,
   parseCommand,
+  CLAUDE_EFFORT_LEVELS,
   ROUTE_PROVIDERS,
   TASK_KINDS,
   availabilityFromAuth,
+  checkEffort,
+  claudeRegistry,
+  discoverCodexModels,
   readAllQuotas,
   routeTask,
   readClaudeCache,
@@ -18,6 +22,9 @@ import {
   type AppServerSpawn,
   type AuthStatus,
   type ClaudeQuotaStatus,
+  type CodexModelsResult,
+  type EffortCheck,
+  type ModelCapability,
   type ProviderPreference,
   type ProviderQuota,
   type RouteDecision,
@@ -43,6 +50,9 @@ Commands:
   quota all             Show Claude (local cache) and Codex (app-server) limits together
   quota claude          Show Claude Code limits from the local statusLine cache
   quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
+  models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
+  models check <claude|codex> <model> <effort>
+                        Exit 0 supported, 1 unsupported, 3 unknown
   route --dry-run --task <kind> [--prefer claude|codex|auto]
                         Recommend a provider (no agent is started)
   statusline-collect    Store 5h/7d limits from statusLine JSON on stdin (opt-in, see docs/STATUSLINE.md)
@@ -209,6 +219,32 @@ function formatRoute(args: RouteArgs, decision: RouteDecision): string {
   );
 }
 
+function formatModel(m: ModelCapability): string {
+  const name = m.displayName === undefined ? m.id : `${m.id} (${m.displayName})`;
+  let efforts: string;
+  if (m.efforts.status === 'known') {
+    const list = m.efforts.supported.join(', ');
+    efforts = `efforts ${list}${m.efforts.default === undefined ? '' : `, default ${m.efforts.default}`}`;
+  } else {
+    efforts = m.provider === 'claude' ? `efforts unknown (documented levels: ${CLAUDE_EFFORT_LEVELS.join(', ')})` : 'efforts unknown';
+  }
+  const mode = m.modes.ultracode === 'unknown' ? '' : `; ultracode mode ${m.modes.ultracode}`;
+  return `  ${name}: ${efforts}${mode}\n`;
+}
+
+function formatCodexModels(result: CodexModelsResult): string {
+  const head = 'Codex (discovered via app-server model/list)';
+  if (result.state === 'not-installed') return `${head}\n  not installed\n`;
+  if (result.state === 'error') return `${head}\n  error: ${result.error}\n`;
+  return `${head}\n${result.models.length === 0 ? '  none listed\n' : result.models.map(formatModel).join('')}`;
+}
+
+function formatEffortCheck(check: EffortCheck): string {
+  if (check.status === 'supported') return `supported${check.isDefault ? ' (default)' : ''}\n`;
+  if (check.status === 'unsupported') return `unsupported (supported: ${check.supported.join(', ')})\n`;
+  return `unknown (${check.reason})\n`;
+}
+
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   const parsed = parseCommand(argv);
   if (!parsed.ok) {
@@ -302,6 +338,30 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       });
       io.out(formatRoute(args, decision));
       return 0;
+    }
+    case 'models': {
+      const [, sub, provider, modelId, effort] = argv;
+      if (sub === undefined) {
+        const codex = await discoverCodexModels(deps.appServer);
+        io.out(
+          `Claude Code (documented; account access not verified)\n${claudeRegistry.map(formatModel).join('')}` +
+            formatCodexModels(codex) +
+            'note: ultracode is an optional work mode, not an effort level; support is unknown unless stated.\n',
+        );
+        return 0;
+      }
+      if (sub !== 'check' || (provider !== 'claude' && provider !== 'codex') || modelId === undefined || effort === undefined) {
+        io.error('usage: agent-control-lab models [check <claude|codex> <model> <effort>]\n');
+        return 2;
+      }
+      let registry: readonly ModelCapability[] = claudeRegistry;
+      if (provider === 'codex') {
+        const codex = await discoverCodexModels(deps.appServer);
+        registry = codex.state === 'ok' ? codex.models : [];
+      }
+      const check = checkEffort(registry, provider, modelId, effort);
+      io.out(formatEffortCheck(check));
+      return check.status === 'supported' ? 0 : check.status === 'unsupported' ? 1 : 3;
     }
     case 'info':
       io.out(

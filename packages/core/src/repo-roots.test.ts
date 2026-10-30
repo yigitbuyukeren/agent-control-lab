@@ -78,7 +78,7 @@ describe('projectSettingsDirs', () => {
 });
 
 describe('discoverRepoRoots (real git)', () => {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'acl roots ')));
+  const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'acl roots ')));
   const git = (cwd: string, ...args: string[]) => {
     execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'ignore' });
   };

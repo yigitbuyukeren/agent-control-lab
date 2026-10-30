@@ -7,7 +7,7 @@ import type { ProcessOutcome } from './process-runner.ts';
 
 let dir = '';
 beforeEach(() => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), 'acl settings ')));
+  dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'acl settings ')));
 });
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });

@@ -1,6 +1,7 @@
 import type { AuthStatus } from './auth.ts';
 import { sanitize, validateTask, MAX_RUN_OUTPUT_BYTES, MAX_RUN_TIMEOUT_MS, type CodexRunOutcome } from './codex-run.ts';
 import { runProcess, type ProcessRunner } from './process-runner.ts';
+import type { SettingsFinding, SettingsScan } from './claude-settings.ts';
 import type { Selection, SelectionIssue } from './selection.ts';
 
 /** Lowest Claude Code version verified to accept `--effort ultracode` without a warning. */
@@ -39,6 +40,8 @@ export function claudeRunEnv(env: Readonly<Record<string, string | undefined>>):
  * Verified against `claude --help` (2.1.312): `-p` prompts from stdin; `--tools ""` disables
  * every built-in tool; `--strict-mcp-config` without `--mcp-config` loads no MCP servers;
  * `--safe-mode` disables hooks, plugins, skills and MCP customisations (auth still works);
+ * `--restricted` removes code-running tools and ignores user, project and local settings
+ * files (managed settings still apply, which is why they are scanned separately);
  * `--no-session-persistence` keeps nothing on disk; `--permission-prompts none` denies
  * anything that would prompt. Ultracode is passed through `--effort ultracode`.
  */
@@ -48,6 +51,7 @@ export function buildClaudePrintArgs(selection: Selection): string[] {
     '--tools',
     '',
     '--strict-mcp-config',
+    '--restricted',
     '--safe-mode',
     '--disable-slash-commands',
     '--no-session-persistence',
@@ -89,12 +93,21 @@ export type ClaudeRefusalReason =
   | 'third-party-provider'
   | 'not-a-subscription-plan'
   | 'claude-version-unsupported'
+  | 'claude-version-unknown'
+  | 'claude-flags-unverified'
+  | 'settings-unsafe'
+  | 'settings-unverifiable'
   | 'selection-blocked'
   | 'unverified-selection';
 
 export type ClaudeRunPlan =
   | { readonly ok: true; readonly warnings: readonly SelectionIssue[] }
-  | { readonly ok: false; readonly reason: ClaudeRefusalReason; readonly issues: readonly SelectionIssue[] };
+  | {
+      readonly ok: false;
+      readonly reason: ClaudeRefusalReason;
+      readonly issues: readonly SelectionIssue[];
+      readonly findings: readonly SettingsFinding[];
+    };
 
 /**
  * Pure preflight: a verified Pro/Max subscription login on Anthropic's own API and no blocking
@@ -106,9 +119,16 @@ export function planClaudeRun(input: {
   auth: AuthStatus;
   selection: Selection;
   version: string | undefined;
+  /** Required CLI flags missing from `claude --help`, or `undefined` if help could not be read. */
+  missingFlags: readonly string[] | undefined;
+  settings: SettingsScan;
   acceptUnverified: boolean;
 }): ClaudeRunPlan {
-  const refuse = (reason: ClaudeRefusalReason, issues: readonly SelectionIssue[] = []): ClaudeRunPlan => ({ ok: false, reason, issues });
+  const refuse = (
+    reason: ClaudeRefusalReason,
+    issues: readonly SelectionIssue[] = [],
+    findings: readonly SettingsFinding[] = [],
+  ): ClaudeRunPlan => ({ ok: false, reason, issues, findings });
   const { auth, selection } = input;
   if (!validateTask(input.task)) return refuse('task-invalid');
   if (auth.state === 'not-installed') return refuse('claude-not-installed');
@@ -119,10 +139,16 @@ export function planClaudeRun(input: {
   if (auth.method !== 'subscription' || auth.plan === undefined || !SUBSCRIPTION_PLANS.has(auth.plan)) {
     return refuse('not-a-subscription-plan');
   }
+  // Fail closed: if the CLI's flags or the settings files cannot be verified, nothing runs.
+  if (input.missingFlags === undefined || input.missingFlags.length > 0) return refuse('claude-flags-unverified');
+  if (input.settings.status === 'unverifiable') return refuse('settings-unverifiable');
+  if (input.settings.status === 'unsafe') return refuse('settings-unsafe', [], input.settings.findings);
   if (selection.blocked) return refuse('selection-blocked', selection.issues.filter((i) => i.blocking));
   if (selection.mode === 'ultracode') {
-    const comparison = input.version === undefined ? undefined : compareVersions(input.version, MIN_ULTRACODE_VERSION);
-    if (comparison !== undefined && comparison < 0) return refuse('claude-version-unsupported');
+    if (input.version === undefined) return refuse('claude-version-unknown');
+    const comparison = compareVersions(input.version, MIN_ULTRACODE_VERSION);
+    if (comparison === undefined) return refuse('claude-version-unknown');
+    if (comparison < 0) return refuse('claude-version-unsupported');
   }
   if (selection.issues.length > 0 && !input.acceptUnverified) return refuse('unverified-selection', selection.issues);
   return { ok: true, warnings: selection.issues };

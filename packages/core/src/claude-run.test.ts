@@ -26,13 +26,13 @@ const auth = (over: Partial<AuthStatus> = {}): AuthStatus => ({
 describe('buildClaudePrintArgs', () => {
   it('is tool-less, MCP-less, customisation-less, non-persistent and prompt-denying', () => {
     expect(buildClaudePrintArgs(selectionFor())).toEqual([
-      '-p', '--tools', '', '--strict-mcp-config', '--safe-mode', '--disable-slash-commands',
+      '-p', '--tools', '', '--strict-mcp-config', '--restricted', '--safe-mode', '--disable-slash-commands',
       '--no-session-persistence', '--permission-prompts', 'none', '--output-format', 'text',
     ]);
   });
 
   it('passes an explicit model and effort, and ultracode through --effort', () => {
-    const tail = (r: Partial<SelectionRequest>) => buildClaudePrintArgs(selectionFor(r)).slice(11);
+    const tail = (r: Partial<SelectionRequest>) => buildClaudePrintArgs(selectionFor(r)).slice(12);
     expect(tail({ model: 'claude-opus-5-5', effort: 'high' })).toEqual(['--model', 'claude-opus-5-5', '--effort', 'high']);
     expect(tail({ mode: 'ultracode' })).toEqual(['--effort', 'ultracode']);
   });
@@ -68,7 +68,7 @@ describe('compareVersions', () => {
 
 describe('planClaudeRun', () => {
   const plan = (over: Partial<Parameters<typeof planClaudeRun>[0]> = {}) =>
-    planClaudeRun({ task: 'hi', auth: auth(), selection: selectionFor(), version: '2.1.312', acceptUnverified: false, ...over });
+    planClaudeRun({ task: 'hi', auth: auth(), selection: selectionFor(), version: '2.1.312', missingFlags: [], settings: { status: 'clean' }, acceptUnverified: false, ...over });
   const reason = (over: Partial<Parameters<typeof planClaudeRun>[0]>) => {
     const p = plan(over);
     return p.ok ? 'ok' : p.reason;
@@ -115,7 +115,38 @@ describe('planClaudeRun', () => {
     expect(MIN_ULTRACODE_VERSION).toBe('2.1.312');
     expect(plan({ selection, version: '2.1.311', acceptUnverified: true })).toMatchObject({ reason: 'claude-version-unsupported' });
     expect(plan({ selection, version: '2.1.312', acceptUnverified: true })).toMatchObject({ ok: true });
-    expect(plan({ selection, version: undefined, acceptUnverified: true })).toMatchObject({ ok: true });
+    expect(plan({ selection, version: undefined, acceptUnverified: true })).toMatchObject({ reason: 'claude-version-unknown' });
+    expect(plan({ selection, version: 'weird', acceptUnverified: true })).toMatchObject({ reason: 'claude-version-unknown' });
+    // An unknown version only matters for ultracode.
+    expect(plan({ version: undefined })).toMatchObject({ ok: true });
+  });
+});
+
+describe('planClaudeRun: fail-closed hardening', () => {
+  const plan = (over: Partial<Parameters<typeof planClaudeRun>[0]> = {}) =>
+    planClaudeRun({ task: 'hi', auth: auth(), selection: selectionFor(), version: '2.1.312', missingFlags: [], settings: { status: 'clean' }, acceptUnverified: true, ...over });
+
+  it('refuses when the CLI flags cannot be verified, with and without --accept-unverified', () => {
+    for (const missingFlags of [undefined, ['--restricted'], ['--safe-mode', '--tools']]) {
+      expect(plan({ missingFlags })).toMatchObject({ ok: false, reason: 'claude-flags-unverified' });
+    }
+  });
+
+  it('refuses unsafe settings and reports only key names', () => {
+    const findings = [{ kind: 'user' as const, key: 'env.ANTHROPIC_BASE_URL' }, { kind: 'project' as const, key: 'apiKeyHelper' }];
+    const result = plan({ settings: { status: 'unsafe', findings } });
+    expect(result).toMatchObject({ ok: false, reason: 'settings-unsafe', findings });
+  });
+
+  it('refuses settings that cannot be read or parsed', () => {
+    for (const problem of ['unreadable', 'invalid', 'too-large'] as const) {
+      expect(plan({ settings: { status: 'unverifiable', kind: 'user', problem } })).toMatchObject({ reason: 'settings-unverifiable' });
+    }
+  });
+
+  it('cannot be bypassed by --accept-unverified, and still checks login first', () => {
+    expect(plan({ auth: auth({ method: 'api-key' }), settings: { status: 'unsafe', findings: [] } })).toMatchObject({ reason: 'api-key-login' });
+    expect(plan({ settings: { status: 'unsafe', findings: [] }, acceptUnverified: true })).toMatchObject({ ok: false });
   });
 });
 

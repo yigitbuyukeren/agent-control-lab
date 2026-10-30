@@ -17,6 +17,9 @@ import {
   checkEffort,
   checkGitRepo,
   claudeCodeAdapter,
+  missingClaudeFlags,
+  scanClaudeSettings,
+  settingsLocations,
   claudeRunEnv,
   codexAdapter,
   createExec,
@@ -51,6 +54,7 @@ import {
   type RefusalReason,
   type CodexRunOutcome,
   type ClaudeRefusalReason,
+  type SettingsScan,
   type GitState,
   type ProviderPreference,
   type ProviderQuota,
@@ -104,6 +108,7 @@ export interface Deps {
   readonly cacheDir?: string;
   readonly runner?: ProcessRunner;
   readonly git?: (cwd: string) => Promise<GitState>;
+  readonly claudeSettings?: (cwd: string) => Promise<SettingsScan>;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
   readonly now?: () => Date;
@@ -416,7 +421,11 @@ function parseRunArgs(args: readonly string[]): RunArgs | string {
   if (provider !== 'codex' && provider !== 'claude') return '--provider must be codex or claude';
   if (provider === 'codex' && mode === 'ultracode') return 'ultracode is not supported for Codex';
   if (task === undefined) return '--task "<text>" is required';
-  if (!confirm && !dryRun) return 'run needs --confirm: it starts a real, billed Codex session';
+  if (!confirm && !dryRun) {
+    return provider === 'claude'
+      ? 'run needs --confirm: it starts a real Claude session that uses your subscription quota'
+      : 'run needs --confirm: it starts a real, billed Codex session';
+  }
   return { provider, task, request: { model, effort, mode }, cwd, timeoutMs, dryRun, acceptUnverified };
 }
 
@@ -444,6 +453,10 @@ const CLAUDE_REFUSALS: Record<ClaudeRefusalReason, string> = {
   'third-party-provider': 'claude is using a third-party provider; only a Pro/Max subscription login is allowed',
   'not-a-subscription-plan': 'claude is not signed in with a verified Pro/Max subscription',
   'claude-version-unsupported': 'this Claude Code version is older than the verified minimum for ultracode',
+  'claude-version-unknown': 'the Claude Code version could not be read or parsed, which ultracode requires',
+  'claude-flags-unverified': 'the Claude CLI did not list every safety flag the run needs (see claude --help); refusing to guess',
+  'settings-unsafe': 'a Claude settings file sets credentials, a provider, a proxy or a login helper',
+  'settings-unverifiable': 'a Claude settings file exists but could not be read or parsed, so it could not be verified',
   'selection-blocked': 'the model/effort/mode selection is blocked',
   'unverified-selection': 'the model/effort/mode selection could not be verified; add --accept-unverified to run anyway',
 };
@@ -465,15 +478,41 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
   // Probe with the same cleaned environment the run will use, so an API key in the caller's
   // environment cannot make the check pass or fail differently from the real run.
   const exec = deps.exec ?? createExec({ env: claudeRunEnv(process.env) });
-  const [auth, provider] = await Promise.all([detectAuth(claudeCodeAdapter, exec), detectProvider(claudeCodeAdapter, exec)]);
+  const [auth, provider, help, settings] = await Promise.all([
+    detectAuth(claudeCodeAdapter, exec),
+    detectProvider(claudeCodeAdapter, exec),
+    exec('claude', ['--help'], { timeoutMs: 5000 }),
+    (deps.claudeSettings ?? ((dir: string) => scanClaudeSettings(settingsLocations({ cwd: dir }))))(cwd),
+  ]);
   const selection = resolveSelection('claude', args.request, { claude: claudeRegistry, codex: { state: 'ok', models: [] } });
-  const plan = planClaudeRun({ task: args.task, auth, selection, version: provider.version, acceptUnverified: args.acceptUnverified });
+  const extraFlags = [
+    ...(args.request.model === 'auto' ? [] : ['--model']),
+    ...(args.request.effort === 'auto' && args.request.mode === 'normal' ? [] : ['--effort']),
+  ];
+  const missingFlags = help.kind === 'ok' ? missingClaudeFlags(help.stdout, extraFlags) : undefined;
+  const plan = planClaudeRun({
+    task: args.task,
+    auth,
+    selection,
+    version: provider.version,
+    missingFlags,
+    settings,
+    acceptUnverified: args.acceptUnverified,
+  });
+  const findingLines = (plan.ok ? [] : plan.findings).map((f) => `  finding: ${f.kind} settings ${f.key}\n`);
+  const settingsLine =
+    settings.status === 'unverifiable' ? `  settings: ${settings.kind} file is ${settings.problem}\n` : '';
   if (args.dryRun) {
     const login = auth.state === 'logged-in' ? `${auth.method ?? 'unknown'} login${auth.plan === undefined ? '' : ` (${auth.plan})`}` : auth.state;
     const required = ['--confirm', ...(selection.issues.length > 0 && !selection.blocked ? ['--accept-unverified'] : [])];
     io.out(
       'run plan (dry run, no agent started)\n' +
         `  provider: claude\n  cwd: ${cwd}\n  tools: none (built-in and MCP disabled)\n  session persistence: off\n` +
+        `  restricted: on (user, project and local settings ignored)\n` +
+        `  flags check: ${missingFlags === undefined ? 'unverified' : missingFlags.length === 0 ? 'ok' : `missing ${missingFlags.join(', ')}`}\n` +
+        `  settings check: ${settings.status}\n` +
+        findingLines.join('') +
+        settingsLine +
         `  login: ${login}\n  cli version: ${provider.version ?? 'unknown'}\n` +
         `  model: ${describePinned(selection.model)}\n  effort: ${describePinned(selection.effort)}\n` +
         `  mode: ${selection.mode}\n  timeout: ${String(args.timeoutMs / 1000)}s\n  task: ${String(args.task.length)} characters\n` +
@@ -484,7 +523,10 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
     return plan.ok ? 0 : 1;
   }
   if (!plan.ok) {
-    io.error(`run refused: ${CLAUDE_REFUSALS[plan.reason]}\n${plan.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join('')}`);
+    io.error(
+      `run refused: ${CLAUDE_REFUSALS[plan.reason]}\n${findingLines.join('')}${settingsLine}` +
+        plan.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join(''),
+    );
     return 1;
   }
   io.error(

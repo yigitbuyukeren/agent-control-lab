@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AppServerProcess, Exec, GitState, ProcessOutcome, ProcessSpec } from '@agent-control-lab/core';
+import type { AppServerProcess, Exec, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
 import { run, type Deps } from './main.ts';
 
 async function capture(argv: string[], exec?: Exec) {
@@ -337,9 +337,11 @@ describe('cli', () => {
 
   describe('run --provider claude', () => {
     const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
-    const claudeExec = (auth: { stdout: string; kind?: 'ok' | 'failed' | 'not-found' }, version = '2.1.312 (Claude Code)'): Exec => (command, args) => {
+    const FULL_HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
+    const claudeExec = (auth: { stdout: string; kind?: 'ok' | 'failed' | 'not-found' }, version = '2.1.312 (Claude Code)', help = FULL_HELP): Exec => (command, args) => {
       if (command !== 'claude') return Promise.resolve({ kind: 'not-found' });
       if (args[0] === '--version') return Promise.resolve({ kind: 'ok', stdout: version });
+      if (args[0] === '--help') return Promise.resolve({ kind: 'ok', stdout: help });
       if (auth.kind === 'not-found') return Promise.resolve({ kind: 'not-found' });
       return Promise.resolve(
         auth.kind === 'failed' ? { kind: 'failed', detail: 'x', stdout: auth.stdout, stderr: '' } : { kind: 'ok', stdout: auth.stdout },
@@ -347,7 +349,7 @@ describe('cli', () => {
     };
     const START = ['run', '--provider', 'claude', '--task', 'summarize this', '--confirm'];
 
-    async function go(argv: string[], over: { exec?: Exec; outcome?: ProcessOutcome } = {}) {
+    async function go(argv: string[], over: { exec?: Exec; outcome?: ProcessOutcome; settings?: SettingsScan } = {}) {
       const specs: ProcessSpec[] = [];
       let out = '';
       let error = '';
@@ -358,6 +360,7 @@ describe('cli', () => {
           { out: (t) => (out += t), error: (t) => (error += t) },
           {
             exec: over.exec ?? claudeExec({ stdout: AUTH_PRO }),
+            claudeSettings: () => Promise.resolve(over.settings ?? { status: 'clean' }),
             cwd: dir,
             runner: (spec) => {
               specs.push(spec);
@@ -377,7 +380,7 @@ describe('cli', () => {
       expect(r.out).toBe('answer\n');
       expect(r.error).toContain('no tools, no session persistence, subscription login');
       expect(r.specs[0]).toMatchObject({ command: 'claude', input: 'summarize this' });
-      expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-p', '--tools', '', '--strict-mcp-config', '--safe-mode', '--no-session-persistence']));
+      expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-p', '--tools', '', '--strict-mcp-config', '--restricted', '--safe-mode', '--no-session-persistence']));
       expect(Object.keys(r.specs[0]?.env ?? {}).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_)/i.test(k) && k !== 'CLAUDE_CONFIG_DIR')).toEqual([]);
       expect(r.error).not.toContain('example.com');
     });
@@ -442,6 +445,65 @@ describe('cli', () => {
       const clean = await go(['run', '--provider', 'claude', '--task', 'x', '--dry-run']);
       expect(clean.code).toBe(0);
       expect(clean.out).toContain('verdict: would run');
+    });
+
+    it('refuses when the CLI does not list every safety flag, or its help cannot be read', async () => {
+      const noRestricted = FULL_HELP.replace('--restricted', '--something-else');
+      const missing = await go(START, { exec: claudeExec({ stdout: AUTH_PRO }, '2.1.312 (Claude Code)', noRestricted) });
+      expect(missing.code).toBe(1);
+      expect(missing.error).toContain('did not list every safety flag');
+      expect(missing.specs).toHaveLength(0);
+      const unreadable: Exec = (command, args, o) => (args[0] === '--help' ? Promise.resolve({ kind: 'timeout' }) : claudeExec({ stdout: AUTH_PRO })(command, args, o));
+      const down = await go(START, { exec: unreadable });
+      expect(down.code).toBe(1);
+      expect(down.error).toContain('did not list every safety flag');
+      // --model needs its own flag to be listed.
+      const noModelFlag = FULL_HELP.replace('--model <model>', '--nope');
+      expect((await go([...START, '--model', 'claude-opus-5-5', '--accept-unverified'], { exec: claudeExec({ stdout: AUTH_PRO }, '2.1.312 (Claude Code)', noModelFlag) })).code).toBe(1);
+    });
+
+    it('refuses unsafe or unverifiable settings, naming keys but never values', async () => {
+      const unsafe = await go(START, {
+        settings: { status: 'unsafe', findings: [{ kind: 'user', key: 'env.ANTHROPIC_BASE_URL' }, { kind: 'project', key: 'env.HTTPS_PROXY' }, { kind: 'local', key: 'apiKeyHelper' }] },
+      });
+      expect(unsafe.code).toBe(1);
+      expect(unsafe.error).toContain('sets credentials, a provider, a proxy or a login helper');
+      expect(unsafe.error).toContain('finding: user settings env.ANTHROPIC_BASE_URL');
+      expect(unsafe.error).toContain('finding: project settings env.HTTPS_PROXY');
+      expect(unsafe.error).toContain('finding: local settings apiKeyHelper');
+      expect(unsafe.specs).toHaveLength(0);
+      const broken = await go(START, { settings: { status: 'unverifiable', kind: 'project', problem: 'invalid' } });
+      expect(broken.code).toBe(1);
+      expect(broken.error).toContain('could not be read or parsed');
+      expect(broken.error).toContain('settings: project file is invalid');
+      const accepted = await go([...START, '--accept-unverified'], { settings: { status: 'unsafe', findings: [{ kind: 'user', key: 'apiKeyHelper' }] } });
+      expect(accepted.code).toBe(1);
+      expect(accepted.specs).toHaveLength(0);
+    });
+
+    it('rejects ultracode when the CLI version is unreadable', async () => {
+      const r = await go([...START, '--mode', 'ultracode', '--accept-unverified'], { exec: claudeExec({ stdout: AUTH_PRO }, 'not a version') });
+      expect(r.code).toBe(1);
+      expect(r.error).toContain('version could not be read or parsed, which ultracode requires');
+      expect(r.specs).toHaveLength(0);
+    });
+
+    it('names Claude (not Codex) in the missing --confirm message', async () => {
+      const r = await go(START.filter((a) => a !== '--confirm'));
+      expect(r.code).toBe(2);
+      expect(r.error).toContain('Claude');
+      expect(r.error).not.toContain('Codex');
+      expect(r.error).toContain('subscription quota');
+    });
+
+    it('dry-run reports restricted mode, flag and settings checks', async () => {
+      const r = await go(['run', '--provider', 'claude', '--task', 'x', '--dry-run'], { settings: { status: 'unsafe', findings: [{ kind: 'user', key: 'env.ANTHROPIC_API_KEY' }] } });
+      expect(r.code).toBe(1);
+      expect(r.out).toContain('restricted: on (user, project and local settings ignored)');
+      expect(r.out).toContain('flags check: ok');
+      expect(r.out).toContain('settings check: unsafe');
+      expect(r.out).toContain('finding: user settings env.ANTHROPIC_API_KEY');
+      expect(r.out).toContain('would refuse');
     });
 
     it('uses fixed messages for runner failures and rejects bad options before anything runs', async () => {

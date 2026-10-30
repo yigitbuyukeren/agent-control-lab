@@ -65,7 +65,7 @@ describe('runClaude through a real fake claude (cmd shim on Windows)', () => {
     if (outcome.kind !== 'completed') return;
     const seen = JSON.parse(outcome.output) as { args: string[]; stdin: string; cwd: string; leaked: string[] };
     expect(seen.args).toEqual([
-      '-p', '--tools', '', '--strict-mcp-config', '--safe-mode', '--disable-slash-commands', '--no-session-persistence',
+      '-p', '--tools', '', '--strict-mcp-config', '--restricted', '--safe-mode', '--disable-slash-commands', '--no-session-persistence',
       '--permission-prompts', 'none', '--output-format', 'text', '--model', 'claude-opus-5-5', '--effort', 'high',
     ]);
     expect(seen.stdin).toBe('say hi & "quote"');

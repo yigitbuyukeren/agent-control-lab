@@ -20,7 +20,7 @@ if (args[0] === '--help') { console.log(mode.help.join('\\n')); process.exit(0);
 if (args[0] === 'auth') { console.log(JSON.stringify(mode.auth)); process.exit(0); }
 let stdin = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
-  fs.appendFileSync(path.join(__dirname, 'calls.log'), 'claude\\n');
+  if (args.includes('-p')) fs.appendFileSync(path.join(__dirname, 'calls.log'), 'claude\\n');
   console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, modelUsage: { 'claude-fake-1': {} }, result: 'PLAN: add the flag. key sk-abcdefghijklmnopqrstuvwx' }));
 });
 `;
@@ -32,8 +32,8 @@ if (args[0] === '--version') { console.log('codex-cli 1.0.0'); process.exit(0); 
 if (args[0] === 'login') { console.log('Logged in using ChatGPT'); process.exit(0); }
 let stdin = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
-  fs.appendFileSync(path.join(__dirname, 'calls.log'), 'codex\\n');
-  if (mode.codex === 'hang') { setInterval(() => undefined, 1000); return; }
+  if (args[0] === 'exec') fs.appendFileSync(path.join(__dirname, 'calls.log'), 'codex\\n');
+  if (mode.codex === 'hang' && args[0] === 'exec') { setInterval(() => undefined, 1000); return; }
   console.log('VERDICT: approve');
 });
 `;

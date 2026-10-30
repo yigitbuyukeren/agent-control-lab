@@ -8,7 +8,7 @@ const SHA_B = 'b'.repeat(40);
 function snap(over: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot {
   return {
     root: '/ws', head: SHA_A, branch: 'feature', linked: true, mainRoot: '/main', mainBranch: 'main',
-    refs: { main: SHA_A, feature: SHA_A }, dirty: [], ignored: {}, ignoredPartial: [], mainDirty: {}, ...over,
+    refs: { main: SHA_A, feature: SHA_A }, dirty: [], ignored: {}, ignoredPartial: [], dirtySigs: {}, mainDirty: {}, ...over,
   };
 }
 

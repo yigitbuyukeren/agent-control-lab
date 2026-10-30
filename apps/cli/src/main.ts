@@ -13,6 +13,7 @@ import {
   ROUTE_PROVIDERS,
   TASK_KINDS,
   asEffortLevel,
+  isModelId,
   availabilityFromAuth,
   checkEffort,
   MANAGED_POLICY_LIMIT,
@@ -70,9 +71,9 @@ Commands:
                         Run Codex read-only inside a Git repository (subscription login only, no API-key fallback)
   run --provider claude --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode] [--cwd <dir>] [--timeout <seconds>]
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
-  orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>]
+  orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>] [--step-model <plan|review>=auto|<id>] [--step-effort <plan|review>=auto|<level>]
                         Claude drafts a plan, Codex reviews it read-only; stops at the first failure (no retry, no fallback)
-  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>]
+  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
                         Claude plans, Codex WRITES in that worktree only, limits are checked, Claude reviews the diff; no commit or push
   run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent
@@ -212,11 +213,9 @@ interface RouteArgs {
   readonly request: SelectionRequest;
 }
 
-const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
-
 /** Returns an error message, or undefined when the model id is acceptable. */
 function checkModelArg(value: string | undefined): string | undefined {
-  return value !== undefined && MODEL_ID_PATTERN.test(value) ? undefined : '--model must be auto or a model id';
+  return value !== undefined && isModelId(value) ? undefined : '--model must be auto or a model id';
 }
 
 function checkEffortArg(value: string | undefined): string | undefined {

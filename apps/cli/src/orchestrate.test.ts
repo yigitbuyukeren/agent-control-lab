@@ -2,12 +2,12 @@ import { mkdtempSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import type { Exec, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
+import type { AppServerProcess, Exec, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
 import { run } from './main.ts';
 import { parseOrchestrateArgs } from './orchestrate.ts';
 
 const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
-const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>'].map((f) => `  ${f}  text`).join('\n');
+const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
 
 function exec(over: { claudeAuth?: string; codexLogin?: string } = {}): Exec {
   return (command, args) => {
@@ -22,6 +22,23 @@ function exec(over: { claudeAuth?: string; codexLogin?: string } = {}): Exec {
     return Promise.resolve({ kind: 'not-found' });
   };
 }
+
+const modelServer = (): AppServerProcess => {
+  let lineCb: (line: string) => void = () => undefined;
+  return {
+    send: (line) => {
+      const m = JSON.parse(line) as { id?: number; method: string };
+      if (m.id === undefined) return;
+      const reply = m.method === 'model/list'
+        ? { result: { data: [{ model: 'gpt-a', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }] }], nextCursor: null } }
+        : { result: {} };
+      queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, ...reply })); });
+    },
+    onLine: (cb) => (lineCb = cb),
+    onExit: () => undefined,
+    kill: () => Promise.resolve(),
+  };
+};
 
 const done = (stdout: string): ProcessOutcome => ({ kind: 'completed', exitCode: 0, stdout, truncated: false });
 
@@ -48,6 +65,7 @@ async function go(
       { out: (t) => (out += t), error: (t) => (error += t) },
       {
         exec: over.exec ?? exec(),
+        appServer: modelServer,
         cwd: dir,
         env: over.env ?? { PATH: '/bin' },
         git: () => Promise.resolve(over.git ?? 'repo'),
@@ -195,5 +213,47 @@ describe('orchestrate --confirm', () => {
     const r = await go([...CONFIRM, '--cwd', join(tmpdir(), 'acl-does-not-exist-xyz')]);
     expect(r.code).toBe(1);
     expect(r.error).toContain('working directory does not exist');
+  });
+});
+
+describe('orchestrate plan-review: per-step model and effort', () => {
+  const PICK = ['--step-model', 'plan=claude-x', '--step-effort', 'plan=high', '--step-model', 'review=gpt-a', '--step-effort', 'review=low'];
+
+  it('parses per-step settings and rejects steps the workflow does not have', () => {
+    const base = ['--workflow', 'plan-review', '--task', 'x', '--dry-run'];
+    expect(parseOrchestrateArgs([...base, ...PICK])).toMatchObject({
+      steps: { plan: { request: { model: 'claude-x', effort: 'high' } }, review: { request: { model: 'gpt-a', effort: 'low' }, effortFromFlag: true } },
+    });
+    expect(parseOrchestrateArgs(base)).toMatchObject({ steps: { plan: { modelFromFlag: false }, review: { effortFromFlag: false } } });
+    for (const extra of [['--step-model', 'implement=gpt-a'], ['--step-effort', 'review=ultracode'], ['--step-model', 'review=a', '--step-model', 'review=b'], ['--step-model', 'x=a']]) {
+      expect(typeof parseOrchestrateArgs([...base, ...extra])).toBe('string');
+    }
+  });
+
+  it('dry run reports model, effort, verification and reason per step without calling a model', async () => {
+    const r = await go([...DRY, ...PICK, '--accept-unverified']);
+    expect(r.code).toBe(0);
+    expect(r.specs).toEqual([]);
+    expect(r.out).toContain('model: claude-x (unverified); reason: requested with --step-model plan=claude-x');
+    expect(r.out).toContain('model: gpt-a (verified); reason: requested with --step-model review=gpt-a');
+    expect(r.out).toContain('effort: low (verified)');
+    expect(r.out).toContain('verification: UNVERIFIED (needs --accept-unverified)');
+    const plain = await go(DRY);
+    expect(plain.out).toContain('verification: nothing pinned, nothing to verify');
+    expect(plain.out).not.toContain('requires: --confirm, --accept-unverified');
+    const unverified = await go([...DRY, ...PICK]);
+    expect(unverified.code).toBe(1);
+    expect(unverified.out).toContain('requires: --confirm, --accept-unverified');
+  });
+
+  it('starts each step with its own selection, and nothing when a selection is blocked', async () => {
+    const r = await go([...CONFIRM, ...PICK, '--accept-unverified']);
+    expect(r.code).toBe(0);
+    expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['--model', 'claude-x', '--effort', 'high']));
+    expect(r.specs[1]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=low']));
+    const blocked = await go([...CONFIRM, '--step-model', 'review=gpt-a', '--step-effort', 'review=max']);
+    expect(blocked.code).toBe(1);
+    expect(blocked.specs).toEqual([]);
+    expect(blocked.error).toContain('effort-unsupported');
   });
 });

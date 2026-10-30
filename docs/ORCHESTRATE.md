@@ -34,6 +34,23 @@ so it plans from the task text alone and cannot read the repository.
 
 The managed-policy limit in `docs/CLAUDE-RUN.md` applies here too.
 
+## Model and effort per step
+
+Both workflows accept `--step-model <step>=auto|<model-id>` and `--step-effort <step>=auto|<level>`,
+repeatable, for `plan`, `implement` (plan-implement-review only) and `review`. The step decides the
+provider (plan-review: plan = Claude, review = Codex; plan-implement-review: plan = Claude, implement =
+Codex, review = Claude), and the existing model discovery, effort compatibility and preflight checks run
+for each step.
+
+- `auto` (or no flag) keeps the provider default; which model or level that is, is not known here.
+- An unknown step, a step the workflow lacks, a repeated step, a malformed value or `ultracode` is refused
+  while parsing. Ultracode is never selected by this option.
+- A definite incompatibility (unknown Codex model, unsupported effort) is **blocking** and nothing starts.
+  Anything that cannot be verified (every pinned Claude model, an effort without a pinned model) needs
+  `--accept-unverified`.
+- `--dry-run` prints model, effort, verification status (verified / UNVERIFIED / BLOCKED / nothing pinned)
+  and the reason for each step, and calls no model.
+
 # plan-implement-review (infrastructure, first stage)
 
 ```
@@ -109,7 +126,11 @@ for it; this is risk reduction, not isolation.** What is added:
   `*.config.*`, `*.csproj`, ...), so the model cannot rewire the test command; run those tests yourself
   after reading the diff;
 - afterwards the workspace and the main worktree are compared again: a moved HEAD or branch, a
-  changed main-worktree path, rewritten tracked files or a new protected path fail the step;
+  changed main-worktree path, rewritten tracked files, a new protected path, **any added, removed or
+  rewritten untracked or ignored file** (build output, caches, `coverage/`) fail the step, because the
+  review only saw the state before verification. A test run that writes such files therefore fails
+  verification; clean them up yourself or run the tests by hand. Fingerprints are kind/size/mtime, not
+  content hashes;
 - a failed verification stops the review. Reading the diff and running tests yourself remains the
   safest option, and verification can simply be left out.
 

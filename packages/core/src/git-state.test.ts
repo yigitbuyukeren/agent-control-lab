@@ -82,7 +82,7 @@ describe('snapshotWorkspace (mock git)', () => {
     const result = await snapshotWorkspace('/ws', { runner, platform: 'linux', env: { PATH: '/bin', GIT_DIR: '/elsewhere' } });
     expect(result).toEqual({
       ok: true,
-      snapshot: { root: '/ws', head: SHA, branch: 'feature', linked: true, mainRoot: '/main', mainBranch: 'feature', refs: { feature: SHA, main: SHA }, dirty: ['a.ts'], ignored: {}, ignoredPartial: [], mainDirty: { 'a.ts': ' M:missing' } },
+      snapshot: { root: '/ws', head: SHA, branch: 'feature', linked: true, mainRoot: '/main', mainBranch: 'feature', refs: { feature: SHA, main: SHA }, dirty: ['a.ts'], ignored: {}, ignoredPartial: [], dirtySigs: { 'a.ts': ' M:missing' }, mainDirty: { 'a.ts': ' M:missing' } },
     });
     // The root lookup is a plain rev-parse; every call that inspects state carries the hardening flags.
     for (const spec of specs.filter((x) => !x.args.includes('--show-toplevel'))) {

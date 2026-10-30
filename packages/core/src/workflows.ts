@@ -19,6 +19,8 @@ export interface PlanReviewOptions {
   readonly cwd: string;
   readonly claudeSelection: Selection;
   readonly codexSelection: Selection;
+  /** `plan-implement-review` only: Claude's selection for the review step; defaults to `claudeSelection`. */
+  readonly reviewSelection?: Selection;
   /** Applies to each step separately. */
   readonly timeoutMs: number;
   readonly runner?: ProcessRunner;
@@ -168,7 +170,7 @@ export function planImplementReviewSteps(options: PlanImplementReviewOptions): S
       (verify === undefined ? '' : `\nVerification:\n${untrustedBlock('VERIFICATION', inputs['verify'] ?? '', nonce)}\n`),
     run: (prompt, signal) =>
       runClaude(
-        { task: prompt, cwd: options.cwd, selection: options.claudeSelection, timeoutMs: options.timeoutMs, ...(signal === undefined ? {} : { signal }) },
+        { task: prompt, cwd: options.cwd, selection: options.reviewSelection ?? options.claudeSelection, timeoutMs: options.timeoutMs, ...(signal === undefined ? {} : { signal }) },
         deps,
       ),
   });

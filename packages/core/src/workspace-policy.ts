@@ -205,6 +205,12 @@ export function checkAfterVerification(
   if (moved.length > 0) problems.push({ code: 'other-branch-changed', detail: detail(moved) });
   const mainChanged = differing(base.mainDirty, after.mainDirty);
   if (mainChanged.length > 0) problems.push({ code: 'main-worktree-changed', detail: detail(mainChanged) });
+  // Verification may write untracked or ignored files (caches, build output); anything it adds,
+  // removes or rewrites outside the expected state is reported, not silently accepted.
+  const ignoredMoved = differing(base.ignored, after.ignored);
+  if (ignoredMoved.length > 0) problems.push({ code: 'ignored-file-changed', detail: detail(ignoredMoved) });
+  const dirtyMoved = differing(base.dirtySigs, after.dirtySigs);
+  if (dirtyMoved.length > 0) problems.push({ code: 'review-incomplete', detail: `files changed during verification: ${detail(dirtyMoved)}` });
   const key = (c: WorkspaceChanges) => JSON.stringify(c.tracked) + JSON.stringify(c.raw);
   if (key(baseChanges) !== key(afterChanges)) problems.push({ code: 'review-incomplete', detail: 'tracked files changed during verification' });
   const newProtected = afterChanges.paths.filter((p) => !baseChanges.paths.includes(p) && isProtectedPath(p));

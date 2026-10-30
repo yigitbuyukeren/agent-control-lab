@@ -1,23 +1,24 @@
 import {
-  DEFAULT_REQUEST,
   DEFAULT_RUN_TIMEOUT_MS,
   MANAGED_POLICY_LIMIT,
   MAX_HANDOFF_CHARS,
   MAX_RUN_TIMEOUT_MS,
   WORKFLOW_NAMES,
+  buildStepRequests,
   executeWorkflow,
   isWorkflowName,
   parseVerifyCommand,
   validateWorkingDir,
   planReviewSteps,
   type ProcessRunner,
+  type StepRequests,
   type VerifyCommand,
   type StepResult,
   type WorkflowName,
   type WorkflowResult,
 } from '@agent-control-lab/core';
-import { CLAUDE_REFUSALS, REFUSALS, describeIssue } from './format.ts';
-import { claudePreflight, codexPreflight, type ClaudePreflight, type PreflightDeps } from './preflight.ts';
+import type { PreflightDeps } from './preflight.ts';
+import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
 
 export interface OrchestrateIo {
   readonly out: (text: string) => void;
@@ -41,6 +42,8 @@ export interface OrchestrateArgs {
   readonly timeoutMs: number;
   readonly dryRun: boolean;
   readonly acceptUnverified: boolean;
+  /** Model and effort asked for each step (`--step-model`, `--step-effort`); `auto` keeps the provider default. */
+  readonly steps: StepRequests;
   /** `plan-implement-review` only: the existing isolated worktree the implementation may write to. */
   readonly workspace?: string;
   /** `plan-implement-review` only: explicit permission to write files in `workspace`. */
@@ -64,6 +67,8 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   let confirmVerify = false;
   let allowPartialIgnored = false;
   let workspace: string | undefined;
+  const stepModels: string[] = [];
+  const stepEfforts: string[] = [];
   let verifyText: string | undefined;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
   for (let i = 0; i < args.length; i += 1) {
@@ -80,6 +85,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       confirmVerify = true;
     } else if (arg === '--allow-partial-ignored-check') {
       allowPartialIgnored = true;
+    } else if (arg === '--step-model' || arg === '--step-effort') {
+      const value = args[(i += 1)];
+      if (value === undefined) return `${arg} needs step=value, for example ${arg} plan=auto`;
+      (arg === '--step-model' ? stepModels : stepEfforts).push(value);
     } else if (arg === '--workspace') {
       workspace = args[(i += 1)];
       if (workspace === undefined || workspace === '') return '--workspace needs an existing Git worktree directory';
@@ -105,6 +114,8 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   }
   if (workflow === undefined || !isWorkflowName(workflow)) return `--workflow must be one of: ${WORKFLOW_NAMES.join(', ')}`;
   if (task === undefined) return '--task "<text>" is required';
+  const steps = buildStepRequests(workflow, { models: stepModels, efforts: stepEfforts });
+  if (typeof steps === 'string') return steps;
   if (workflow === 'plan-implement-review') {
     if (cwd !== undefined) return 'plan-implement-review takes --workspace <worktree>, not --cwd';
     if (workspace === undefined) return 'plan-implement-review needs --workspace <existing linked Git worktree> (it is never created for you)';
@@ -122,7 +133,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
   if (confirmWrite || confirmVerify || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
     return '--workspace, --verify-command, --confirm-verify, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
@@ -130,30 +141,11 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';
   }
-  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified };
+  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, steps };
 }
 
 export function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
-}
-
-/** Why Claude's preflight refused, without values: variable and settings key names only. */
-export function claudeDetails(pf: ClaudePreflight): string {
-  const plan = pf.plan;
-  if (plan.ok) return '';
-  const lines = [
-    ...plan.findings.map((f) => `      finding: ${f.kind} settings ${f.key}\n`),
-    ...plan.issues.map((i) => `      issue: ${describeIssue(i)}\n`),
-  ];
-  if (pf.settings.status === 'unverifiable') {
-    lines.push(
-      pf.settings.problem === 'repo-unresolved'
-        ? '      settings: repository root could not be resolved\n'
-        : `      settings: ${pf.settings.kind} file is ${pf.settings.problem}\n`,
-    );
-  }
-  if (plan.reason === 'network-env-not-forwarded') lines.push(`      not forwarded: ${pf.networkRedirects.join(', ')}\n`);
-  return lines.join('');
 }
 
 export function formatStep(step: StepResult, index: number, total: number): string {
@@ -198,47 +190,45 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     return 1;
   }
   // Every step's own safety checks run first, and nothing starts unless all of them pass.
-  const input = { task: args.task, request: DEFAULT_REQUEST, acceptUnverified: args.acceptUnverified, cwd };
-  const claude = await claudePreflight(input, deps);
-  const codex = await codexPreflight(input, deps);
-  const ready = claude.plan.ok && codex.plan.ok;
-  const claudeVerdict = claude.plan.ok ? 'would run' : `would refuse: ${CLAUDE_REFUSALS[claude.plan.reason]}`;
-  const codexVerdict = codex.plan.ok ? 'would run' : `would refuse: ${REFUSALS[codex.plan.reason]}`;
+  const pfs = await preflightSteps(args.workflow, args.steps, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, deps);
+  const [planPf, reviewPf] = pfs;
+  if (planPf?.claude === undefined || reviewPf?.codex === undefined) throw new Error('plan-review needs a claude and a codex step');
+  const ready = pfs.every(stepOk);
   if (args.dryRun) {
-    const required = ['--confirm', ...(claude.selection.issues.length + codex.selection.issues.length > 0 ? ['--accept-unverified'] : [])];
+    const required = ['--confirm', ...(pfs.some((p) => stepSelection(p).issues.length > 0) ? ['--accept-unverified'] : [])];
     io.out(
       'orchestrate plan (dry run, no agent started)\n' +
         `  workflow: ${args.workflow}\n  cwd: ${cwd}\n  timeout: ${String(args.timeoutMs / 1000)}s per step\n` +
         `  task: ${String(args.task.length)} characters\n` +
-        `  step 1/2 plan [claude]: tool-less, no session persistence, subscription login: ${claudeVerdict}\n` +
-        claudeDetails(claude) +
-        `  step 2/2 review [codex]: read-only sandbox, git ${codex.git}, subscription login: ${codexVerdict}\n` +
-        (codex.plan.ok ? '' : codex.plan.issues.map((i) => `      issue: ${describeIssue(i)}\n`).join('')) +
+        `  step 1/2 plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
+        selectionLines(planPf) +
+        stepDetails(planPf) +
+        `  step 2/2 review [codex]: read-only sandbox, git ${reviewPf.codex.git}, subscription login: ${stepVerdict(reviewPf)}\n` +
+        selectionLines(reviewPf) +
+        stepDetails(reviewPf) +
         `  data flow: step 1 output (at most ${String(MAX_HANDOFF_CHARS)} characters) is passed to step 2 as untrusted data\n` +
-        '  guarantees: no retries, no provider fallback, no API keys, no file changes by either step\n' +
+        '  guarantees: no retries, no provider fallback, no API keys, no file changes by either step, ultracode never selected\n' +
         `  managed policy: ${MANAGED_POLICY_LIMIT}\n` +
         `  requires: ${required.join(', ')}\n` +
         `  verdict: ${ready ? 'would run' : 'would refuse'}\n`,
     );
     return ready ? 0 : 1;
   }
-  if (!claude.plan.ok || !codex.plan.ok) {
+  if (!ready) {
     io.error(
       'orchestrate refused: no step was started\n' +
-        (claude.plan.ok ? '' : `  step plan [claude]: ${CLAUDE_REFUSALS[claude.plan.reason]}\n${claudeDetails(claude)}`) +
-        (codex.plan.ok ? '' : `  step review [codex]: ${REFUSALS[codex.plan.reason]}\n${codex.plan.issues.map((i) => `      issue: ${describeIssue(i)}\n`).join('')}`),
+        pfs.filter((p) => !stepOk(p)).map((p) => `  step ${p.step} [${p.provider}]: ${stepVerdict(p).replace('would refuse: ', '')}\n${stepDetails(p)}`).join(''),
     );
     return 1;
   }
   io.error(
-    `orchestrating ${args.workflow} in ${cwd} (claude plans, codex reviews read-only; no retries, no fallback)\n` +
-      [...claude.plan.warnings, ...codex.plan.warnings].map((i) => `  warning: ${describeIssue(i)}\n`).join(''),
+    `orchestrating ${args.workflow} in ${cwd} (claude plans, codex reviews read-only; no retries, no fallback)\n` + pfs.map(stepWarnings).join(''),
   );
   const steps = planReviewSteps({
     task: args.task,
     cwd,
-    claudeSelection: claude.selection,
-    codexSelection: codex.selection,
+    claudeSelection: stepSelection(planPf),
+    codexSelection: stepSelection(reviewPf),
     timeoutMs: args.timeoutMs,
     ...(deps.runner === undefined ? {} : { runner: deps.runner }),
     ...(deps.env === undefined ? {} : { env: deps.env }),

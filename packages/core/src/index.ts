@@ -39,6 +39,7 @@ export * from './routing.ts';
 export * from './models.ts';
 export * from './app-server-client.ts';
 export * from './selection.ts';
+export * from './step-selection.ts';
 export * from './process-runner.ts';
 export * from './codex-run.ts';
 export * from './git-preflight.ts';

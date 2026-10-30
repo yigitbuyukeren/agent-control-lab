@@ -3,12 +3,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runProcess, type Exec, type ProcessOutcome, type ProcessSpec } from '@agent-control-lab/core';
+import { runProcess, type AppServerProcess, type Exec, type ProcessOutcome, type ProcessSpec } from '@agent-control-lab/core';
 import { run } from './main.ts';
 import { parseOrchestrateArgs } from './orchestrate.ts';
 
 const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
-const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>'].map((f) => `  ${f}  text`).join('\n');
+const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
 
 const exec: Exec = (command, args) => {
   if (command === 'claude') {
@@ -33,6 +33,23 @@ const done = (stdout: string): ProcessOutcome => ({ kind: 'completed', exitCode:
 const CLEAN_ENV = Object.fromEntries(
   Object.entries(process.env).filter(([k, v]) => v !== undefined && !/^(ANTHROPIC_|CLAUDE_CODE_USE_|NODE_EXTRA_CA|NODE_TLS|SSL_CERT|GIT_)|_PROXY$/i.test(k)),
 ) as Record<string, string>;
+
+const modelServer = (): AppServerProcess => {
+  let lineCb: (line: string) => void = () => undefined;
+  return {
+    send: (line) => {
+      const m = JSON.parse(line) as { id?: number; method: string };
+      if (m.id === undefined) return;
+      const reply = m.method === 'model/list'
+        ? { result: { data: [{ model: 'gpt-a', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'medium' }] }], nextCursor: null } }
+        : { result: {} };
+      queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, ...reply })); });
+    },
+    onLine: (cb) => (lineCb = cb),
+    onExit: () => undefined,
+    kill: () => Promise.resolve(),
+  };
+};
 
 let root = '';
 let main = '';
@@ -71,6 +88,7 @@ async function go(argv: string[], scenario: Scenario = {}) {
     { out: (t) => (out += t), error: (t) => (error += t) },
     {
       exec,
+      appServer: modelServer,
       env: CLEAN_ENV,
       git: () => Promise.resolve('repo'),
       claudeSettings: () => Promise.resolve({ status: 'clean' }),
@@ -388,5 +406,85 @@ describe('orchestrate plan-implement-review: review integrity and verification s
     expect(r.code).toBe(2);
     expect(r.error).toContain('--confirm-verify');
     expect(r.commands).toEqual([]);
+  });
+});
+
+describe('plan-implement-review: per-step model and effort', () => {
+  const PICK = ['--step-model', 'implement=gpt-a', '--step-effort', 'implement=low', '--step-model', 'review=claude-x', '--step-effort', 'review=high'];
+
+  it('rejects bad selections while parsing, before anything is checked or started', () => {
+    const base = ['--workflow', 'plan-implement-review', '--task', 'x', '--workspace', '/w', '--dry-run'];
+    for (const extra of [
+      ['--step-model', 'plan'],
+      ['--step-model', 'plan='],
+      ['--step-model', '=x'],
+      ['--step-model', 'verify=x'],
+      ['--step-model', 'plan=a', '--step-model', 'plan=b'],
+      ['--step-model', 'plan=bad id'],
+      ['--step-effort', 'review=ultracode'],
+      ['--step-effort', 'review=HIGH!'],
+      ['--step-effort'],
+    ]) {
+      expect(typeof parseOrchestrateArgs([...base, ...extra])).toBe('string');
+    }
+    expect(parseOrchestrateArgs([...base, ...PICK])).toMatchObject({ steps: { implement: { request: { model: 'gpt-a', effort: 'low', mode: 'normal' }, modelFromFlag: true } } });
+  });
+
+  it('shows model, effort, verification status and reason for every step in a dry run', async () => {
+    const r = await go([...ARGS(), '--dry-run', ...PICK]);
+    expect(r.code).toBe(1);
+    expect(r.commands).toEqual([]);
+    expect(r.out).toContain('model: provider-default; reason: no flag');
+    expect(r.out).toContain('verification: nothing pinned, nothing to verify');
+    expect(r.out).toContain('model: gpt-a (verified); reason: requested with --step-model implement=gpt-a');
+    expect(r.out).toContain('effort: low (verified); reason: requested with --step-effort implement=low');
+    expect(r.out).toContain('model: claude-x (unverified); reason: requested with --step-model review=claude-x');
+    expect(r.out).toContain('verification: UNVERIFIED (needs --accept-unverified)');
+    expect(r.out).toContain('model-access-unverified');
+    expect(r.out).toContain('requires: --confirm-write, --accept-unverified');
+    expect(r.out).toContain('verdict: would refuse');
+    expect(r.out).toContain('ultracode never selected');
+    const ok = await go([...ARGS(), '--dry-run', ...PICK, '--accept-unverified']);
+    expect(ok.out).toContain('verdict: would run');
+    expect(ok.code).toBe(0);
+  });
+
+  it('blocks an effort the pinned model does not support', async () => {
+    const r = await go([...ARGS(), '--dry-run', '--step-model', 'implement=gpt-a', '--step-effort', 'implement=max', '--accept-unverified']);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain('verification: BLOCKED');
+    expect(r.out).toContain('effort-unsupported');
+    const real = await go([...WRITE(), '--step-model', 'implement=gpt-a', '--step-effort', 'implement=max']);
+    expect(real.code).toBe(1);
+    expect(real.commands).toEqual([]);
+    expect(real.error).toContain('step implement [codex]');
+  });
+
+  it('refuses an unknown codex model without starting any step', async () => {
+    const r = await go([...WRITE(), '--step-model', 'implement=nope']);
+    expect(r.code).toBe(1);
+    expect(r.commands).toEqual([]);
+    expect(r.error).toContain('model-not-listed');
+  });
+
+  it('passes each step its own selection to the right provider and keeps unrelated steps on the default', async () => {
+    const r = await go([...WRITE(), ...PICK, '--accept-unverified'], { onCodex: editFile() });
+    expect(r.code).toBe(0);
+    const [plan, codex, review] = r.specs.filter((s) => s.command !== 'git' || false);
+    expect(plan?.command).toBe('claude');
+    expect(plan?.args).not.toContain('--model');
+    expect(plan?.args).not.toContain('--effort');
+    expect(codex?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=low']));
+    expect(review?.command).toBe('claude');
+    expect(review?.args).toEqual(expect.arrayContaining(['--model', 'claude-x', '--effort', 'high']));
+  });
+
+  it('keeps the provider defaults when no step flags are given', async () => {
+    const r = await go([...WRITE()], { onCodex: editFile() });
+    expect(r.code).toBe(0);
+    for (const spec of r.specs) {
+      expect(spec.args).not.toContain('--model');
+      expect(spec.args).not.toContain('-m');
+    }
   });
 });

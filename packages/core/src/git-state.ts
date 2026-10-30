@@ -172,6 +172,8 @@ export interface WorkspaceSnapshot {
   readonly ignored: Readonly<Record<string, string>>;
   /** Ignored directories too large to walk fully; they are compared one level deep only. */
   readonly ignoredPartial: readonly string[];
+  /** Fingerprints of this worktree's own dirty and untracked paths, so rewrites of them are noticed. */
+  readonly dirtySigs: Readonly<Record<string, string>>;
   /** Fingerprints of the main worktree's dirty paths, so writes into it are detected. */
   readonly mainDirty: Readonly<Record<string, string>>;
 }
@@ -213,6 +215,8 @@ export async function snapshotWorkspace(cwd: string, deps: GitReadDeps = {}): Pr
   const refMap = parseRefs(refs.stdout);
   if (!SHA.test(headSha) || entries === undefined || refMap === undefined) return { ok: false };
   const ignored = await fingerprintIgnored(roots.toplevel, ignoredList.stdout.split('\0').filter((p) => p !== ''));
+  const dirtySigs: Record<string, string> = {};
+  for (const entry of entries) dirtySigs[entry.path] = `${entry.x}${entry.y}:${await fingerprint(join(roots.toplevel, entry.path))}`;
   let mainBranch: string | undefined;
   const mainDirty: Record<string, string> = {};
   if (roots.linkedFrom !== undefined) {
@@ -239,6 +243,7 @@ export async function snapshotWorkspace(cwd: string, deps: GitReadDeps = {}): Pr
       dirty: entries.map((e) => e.path),
       ignored: ignored.sigs,
       ignoredPartial: ignored.partial,
+      dirtySigs,
       mainDirty,
     },
   };

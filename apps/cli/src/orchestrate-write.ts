@@ -1,7 +1,6 @@
 import { relative } from 'node:path';
 import {
   DEFAULT_LIMITS,
-  DEFAULT_REQUEST,
   MANAGED_POLICY_LIMIT,
   MAX_HANDOFF_CHARS,
   createVerificationGuard,
@@ -14,9 +13,8 @@ import {
   type GitReadDeps,
   type PrepareResult,
 } from '@agent-control-lab/core';
-import { CLAUDE_REFUSALS, REFUSALS, describeIssue } from './format.ts';
-import { claudePreflight, codexPreflight } from './preflight.ts';
-import { claudeDetails, formatResult, formatStep, type OrchestrateArgs, type OrchestrateDeps, type OrchestrateIo } from './orchestrate.ts';
+import { formatResult, formatStep, type OrchestrateArgs, type OrchestrateDeps, type OrchestrateIo } from './orchestrate.ts';
+import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
 
 /** Fixed explanations for why a workspace was rejected; nothing here comes from git output. */
 const WORKSPACE_PROBLEMS: Record<string, string> = {
@@ -53,16 +51,13 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   const prep = await prepareWorkspace(cwd, gitDeps, { allowPartialIgnored: args.allowPartialIgnored === true });
   // The write target must be the worktree root itself, not a folder inside it.
   const atRoot = prep.ok ? relative(prep.before.root, cwd) === '' : prep.reason === 'workspace-rejected' && relative(prep.snapshot.root, cwd) === '';
-  const input = { task: args.task, request: DEFAULT_REQUEST, acceptUnverified: args.acceptUnverified, cwd };
-  const claude = await claudePreflight(input, deps);
-  const codex = await codexPreflight(input, deps);
-  const ready = prep.ok && atRoot && claude.plan.ok && codex.plan.ok;
+  const pfs = await preflightSteps(args.workflow, args.steps, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, deps);
+  const [planPf, implementPf, reviewPf] = pfs;
+  if (planPf === undefined || implementPf?.codex === undefined || reviewPf === undefined) throw new Error('plan-implement-review needs plan, implement and review steps');
+  const ready = prep.ok && atRoot && pfs.every(stepOk);
   const total = args.verify === undefined ? 4 : 5;
   const n = (i: number) => `step ${String(i)}/${String(total)}`;
-  const claudeVerdict = claude.plan.ok ? 'would run' : `would refuse: ${CLAUDE_REFUSALS[claude.plan.reason]}`;
-  const codexVerdict = codex.plan.ok ? 'would run' : `would refuse: ${REFUSALS[codex.plan.reason]}`;
   const snapshot = prep.ok ? prep.before : prep.reason === 'workspace-rejected' ? prep.snapshot : undefined;
-  const codexIssues = codex.plan.ok ? '' : codex.plan.issues.map((i) => `      issue: ${describeIssue(i)}\n`).join('');
 
   if (args.dryRun) {
     const limits = DEFAULT_LIMITS;
@@ -75,10 +70,12 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         `  workspace check: ${atRoot || !prep.ok ? workspaceVerdict(prep) : 'rejected: the workspace must be the worktree root'}\n` +
         (prep.ok || prep.reason === 'git-state-unreadable' ? '' : prep.problems.map((p) => `      ${WORKSPACE_PROBLEMS[p] ?? p}\n`).join('')) +
         `  timeout: ${String(args.timeoutMs / 1000)}s per step\n  task: ${String(args.task.length)} characters\n` +
-        `  ${n(1)} plan [claude]: tool-less, no session persistence, subscription login: ${claudeVerdict}\n` +
-        claudeDetails(claude) +
-        `  ${n(2)} implement [codex]: WRITE sandbox limited to the workspace, git ${codex.git}, subscription login: ${codexVerdict}\n` +
-        codexIssues +
+        `  ${n(1)} plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
+        selectionLines(planPf) +
+        stepDetails(planPf) +
+        `  ${n(2)} implement [codex]: WRITE sandbox limited to the workspace, git ${implementPf.codex.git}, subscription login: ${stepVerdict(implementPf)}\n` +
+        selectionLines(implementPf) +
+        stepDetails(implementPf) +
         `  ${n(3)} inspect [local]: read-only Git comparison with the state above, always runs, even after a failure or cancel\n` +
         `      checks: ignored files too (by fingerprint; ${snapshot === undefined ? 'unknown' : snapshot.ignoredPartial.length === 0 ? 'compared in full' : `PARTIAL, one level deep in ${snapshot.ignoredPartial.join(', ')}`}), symlink/type/mode/submodule changes, writes into the main worktree\n` +
         `      limits: ${String(limits.maxFiles)} files, ${String(limits.maxChangedLines)} changed lines, ${String(limits.maxNewFileBytes)} bytes per new file; no binary files, symlinks, commits, branch changes or protected paths (.git, .github/workflows, .claude, .env*, ...)\n` +
@@ -86,13 +83,15 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         (args.verify === undefined
           ? ''
           : `  ${n(4)} verify [local]: ${[args.verify.command, ...args.verify.args].join(' ')} (no shell, cleaned environment; RUNS THE NEWLY WRITTEN CODE OUTSIDE ANY MODEL SANDBOX, refused if build/test config files changed, state re-checked afterwards)\n`) +
-        `  ${n(total)} review [claude]: tool-less; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each)\n` +
-        '  guarantees: no commit, no push, no branch or main-tree changes, no workspace creation, no revert or delete, no retries, no provider fallback, no API keys\n' +
+        `  ${n(total)} review [claude]: tool-less; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each); subscription login: ${stepVerdict(reviewPf)}\n` +
+        selectionLines(reviewPf) +
+        stepDetails(reviewPf) +
+        '  guarantees: no commit, no push, no branch or main-tree changes, no workspace creation, no revert or delete, no retries, no provider fallback, no API keys, ultracode never selected\n' +
         '  on failure or cancel: the workspace keeps whatever was written; the final state is reported and nothing is rolled back\n' +
         `  managed policy: ${MANAGED_POLICY_LIMIT}\n` +
         '  requires: --confirm-write' +
         (args.verify === undefined ? '' : ', --confirm-verify') +
-        `${claude.selection.issues.length + codex.selection.issues.length > 0 ? ', --accept-unverified' : ''}\n` +
+        `${pfs.some((p) => stepSelection(p).issues.length > 0) ? ', --accept-unverified' : ''}\n` +
         `  verdict: ${ready ? 'would run' : 'would refuse'}\n`,
     );
     return ready ? 0 : 1;
@@ -108,22 +107,22 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
           : prep.reason === 'git-state-unreadable'
             ? `  workspace: ${WORKSPACE_UNREADABLE}\n`
             : prep.problems.map((p) => `  workspace: ${WORKSPACE_PROBLEMS[p] ?? p}\n`).join('')) +
-        (claude.plan.ok ? '' : `  step plan [claude]: ${CLAUDE_REFUSALS[claude.plan.reason]}\n${claudeDetails(claude)}`) +
-        (codex.plan.ok ? '' : `  step implement [codex]: ${REFUSALS[codex.plan.reason]}\n${codexIssues}`),
+        pfs.filter((p) => !stepOk(p)).map((p) => `  step ${p.step} [${p.provider}]: ${stepVerdict(p).replace('would refuse: ', '')}\n${stepDetails(p)}`).join(''),
     );
     return 1;
   }
   io.error(
     `orchestrating ${args.workflow}: Codex may WRITE files in ${cwd} (branch ${prep.before.branch ?? ''}); no commit, no push, no retries, no fallback\n` +
-      [...claude.plan.warnings, ...codex.plan.warnings].map((i) => `  warning: ${describeIssue(i)}\n`).join(''),
+      pfs.map(stepWarnings).join(''),
   );
   const verifyCommand = args.verify;
   const guard = createVerificationGuard({ cwd, git: gitDeps });
   const steps = planImplementReviewSteps({
     task: args.task,
     cwd,
-    claudeSelection: claude.selection,
-    codexSelection: codex.selection,
+    claudeSelection: stepSelection(planPf),
+    codexSelection: stepSelection(implementPf),
+    reviewSelection: stepSelection(reviewPf),
     timeoutMs: args.timeoutMs,
     inspect: createWorkspaceInspector({ cwd, before: prep.before, git: gitDeps }),
     ...(verifyCommand === undefined || args.confirmVerify !== true

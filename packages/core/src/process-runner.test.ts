@@ -23,9 +23,10 @@ const node = (script: string, extra: Partial<ProcessSpec> = {}, args: string[] =
 });
 
 async function waitDead(pidFile: string): Promise<boolean> {
-  for (let i = 0; i < 60 && !existsSync(pidFile); i += 1) await new Promise((r) => setTimeout(r, 50));
+  for (let i = 0; i < 100 && !existsSync(pidFile); i += 1) await new Promise((r) => setTimeout(r, 50));
   const pid = Number(readFileSync(pidFile, 'utf8'));
-  for (let i = 0; i < 60; i += 1) {
+  // A killed process can linger as a zombie until its parent or init reaps it; allow for slow runners.
+  for (let i = 0; i < 160; i += 1) {
     try {
       process.kill(pid, 0);
     } catch {

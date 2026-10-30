@@ -1,0 +1,12 @@
+{
+  "name": "@agent-control-lab/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "agent-control-lab": "./bin/agent-control-lab.js" },
+  "scripts": { "typecheck": "tsc -p tsconfig.json" },
+  "dependencies": {
+    "@agent-control-lab/core": "workspace:*",
+    "@agent-control-lab/shared": "workspace:*"
+  }
+}

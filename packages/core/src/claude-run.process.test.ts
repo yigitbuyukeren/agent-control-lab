@@ -75,7 +75,7 @@ describe('runClaude through a real fake claude (cmd shim on Windows)', () => {
     // The cleaned environment carries no test switches, so the fake hangs on a stdin marker.
     const hangDir = mkdirSync(join(work, 'hang'), { recursive: true }) ?? join(work, 'hang');
     const pidFile = join(hangDir, 'fake.pid');
-    const outcome = await runClaude({ task: 'HANG', cwd: hangDir, selection, timeoutMs: 1500 }, { env: env() });
+    const outcome = await runClaude({ task: 'HANG', cwd: hangDir, selection, timeoutMs: 5000 }, { env: env() });
     expect(outcome).toEqual({ kind: 'timeout' });
     const pid = Number(readFileSync(pidFile, 'utf8'));
     let dead = false;

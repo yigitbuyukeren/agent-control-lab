@@ -7,13 +7,17 @@ import {
   parseClaudeStatusLine,
   parseCommand,
   CLAUDE_EFFORT_LEVELS,
+  DEFAULT_REQUEST,
   ROUTE_PROVIDERS,
   TASK_KINDS,
+  asEffortLevel,
   availabilityFromAuth,
   checkEffort,
   claudeRegistry,
   discoverCodexModels,
+  isDefaultRequest,
   readAllQuotas,
+  resolveSelection,
   routeTask,
   readClaudeCache,
   readCodexQuota,
@@ -25,6 +29,10 @@ import {
   type CodexModelsResult,
   type EffortCheck,
   type ModelCapability,
+  type Selection,
+  type SelectionIssue,
+  type SelectionRequest,
+  type Pinned,
   type ProviderPreference,
   type ProviderQuota,
   type RouteDecision,
@@ -53,7 +61,7 @@ Commands:
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
   models check <claude|codex> <model> <effort>
                         Exit 0 supported, 1 unsupported, 3 unknown
-  route --dry-run --task <kind> [--prefer claude|codex|auto]
+  route --dry-run --task <kind> [--prefer claude|codex|auto] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode]
                         Recommend a provider (no agent is started)
   statusline-collect    Store 5h/7d limits from statusLine JSON on stdin (opt-in, see docs/STATUSLINE.md)
   auth-status Show provider login state and method (local status commands only)
@@ -178,12 +186,18 @@ function formatProviderQuota(q: ProviderQuota): string {
 interface RouteArgs {
   readonly task: TaskKind;
   readonly preference: ProviderPreference;
+  readonly request: SelectionRequest;
 }
+
+const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
 
 function parseRouteArgs(args: readonly string[]): RouteArgs | string {
   let task: TaskKind | undefined;
   let preference: ProviderPreference = 'auto';
   let dryRun = false;
+  let model: string = DEFAULT_REQUEST.model;
+  let effort: string = DEFAULT_REQUEST.effort;
+  let mode: SelectionRequest['mode'] = DEFAULT_REQUEST.mode;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
     if (arg === '--dry-run') {
@@ -198,16 +212,68 @@ function parseRouteArgs(args: readonly string[]): RouteArgs | string {
       const choice = [...ROUTE_PROVIDERS, 'auto' as const].find((p) => p === value);
       if (choice === undefined) return '--prefer must be one of: claude, codex, auto';
       preference = choice;
+    } else if (arg === '--model') {
+      const value = args[(i += 1)];
+      if (value === undefined || !MODEL_ID_PATTERN.test(value)) return '--model must be auto or a model id';
+      model = value;
+    } else if (arg === '--effort') {
+      const value = args[(i += 1)];
+      if (value === 'ultracode') return 'ultracode is a work mode, not an effort: use --mode ultracode';
+      if (value !== 'auto' && (value === undefined || asEffortLevel(value) === undefined)) {
+        return '--effort must be auto or a level such as low, medium, high, xhigh, max, ultra';
+      }
+      effort = value;
+    } else if (arg === '--mode') {
+      const value = args[(i += 1)];
+      if (value !== 'normal' && value !== 'ultracode') return '--mode must be normal or ultracode';
+      mode = value;
     } else {
       return `unknown route option: ${arg ?? ''}`;
     }
   }
   if (!dryRun) return 'route only supports --dry-run; nothing is executed';
   if (task === undefined) return `--task is required (${TASK_KINDS.join(', ')})`;
-  return { task, preference };
+  return { task, preference, request: { model, effort, mode } };
 }
 
-function formatRoute(args: RouteArgs, decision: RouteDecision): string {
+function describePinned(pinned: Pinned): string {
+  if (pinned.kind === 'provider-default') return 'provider-default';
+  return `${pinned.value} (${pinned.verified ? 'verified' : 'unverified'})`;
+}
+
+function describeIssue(issue: SelectionIssue): string {
+  const flag = issue.blocking ? 'blocking' : 'unverified';
+  switch (issue.code) {
+    case 'model-not-listed':
+      return `model-not-listed [${flag}] ${issue.model}`;
+    case 'model-discovery-failed':
+      return `model-discovery-failed [${flag}] ${issue.model} (${issue.reason}${issue.error === undefined ? '' : `: ${issue.error}`})`;
+    case 'model-access-unverified':
+      return `model-access-unverified [${flag}] ${issue.model} (${issue.documented ? 'documented' : 'not documented'})`;
+    case 'effort-invalid':
+      return `effort-invalid [${flag}] ${issue.effort}`;
+    case 'effort-unsupported':
+      return `effort-unsupported [${flag}] ${issue.effort} (supported: ${issue.supported.join(', ')})`;
+    case 'effort-unverified':
+      return `effort-unverified [${flag}] ${issue.effort} (${issue.reason})`;
+    case 'mode-unsupported':
+      return `mode-unsupported [${flag}] ${issue.mode}`;
+    case 'mode-unverified':
+      return `mode-unverified [${flag}] ${issue.mode}`;
+  }
+}
+
+function formatSelection(selection: Selection): string {
+  return (
+    `  model: ${describePinned(selection.model)}\n` +
+    `  effort: ${describePinned(selection.effort)}\n` +
+    `  mode: ${selection.mode}\n` +
+    selection.issues.map((i) => `  issue: ${describeIssue(i)}\n`).join('') +
+    `  manual-approval: ${selection.manualApprovalRequired ? 'required' : 'not required'}\n`
+  );
+}
+
+function formatRoute(args: RouteArgs, decision: RouteDecision, selection?: Selection): string {
   const head = `route (dry run): task=${args.task} prefer=${args.preference}\n`;
   if (decision.kind === 'manual-selection-required') {
     return `${head}manual-selection-required\n${decision.reasons.map((r) => `  reason: ${r}\n`).join('')}`;
@@ -215,7 +281,8 @@ function formatRoute(args: RouteArgs, decision: RouteDecision): string {
   return (
     `${head}recommended: ${decision.provider}\n` +
     decision.reasons.map((r) => `  reason: ${r}\n`).join('') +
-    decision.caveats.map((c) => `  caveat: ${c.code} (${c.provider})\n`).join('')
+    decision.caveats.map((c) => `  caveat: ${c.code} (${c.provider})\n`).join('') +
+    (selection === undefined ? '' : formatSelection(selection))
   );
 }
 
@@ -336,7 +403,16 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         availability: availabilityFromAuth(auth),
         quota: Object.fromEntries(quotas.map((q) => [q.provider, q])),
       });
-      io.out(formatRoute(args, decision));
+      let selection: Selection | undefined;
+      if (decision.kind === 'recommend' && !isDefaultRequest(args.request)) {
+        const needsCodexCatalog =
+          decision.provider === 'codex' && (args.request.model !== 'auto' || args.request.effort !== 'auto');
+        const codex: CodexModelsResult = needsCodexCatalog
+          ? await discoverCodexModels(deps.appServer)
+          : { state: 'ok', models: [] };
+        selection = resolveSelection(decision.provider, args.request, { claude: claudeRegistry, codex });
+      }
+      io.out(formatRoute(args, decision, selection));
       return 0;
     }
     case 'models': {

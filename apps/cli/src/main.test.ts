@@ -180,28 +180,36 @@ describe('cli', () => {
       }
       return Promise.resolve({ kind: 'not-found' });
     };
-    const appServer = (usedPercent: number) => (): AppServerProcess => {
+    const appServer = (usedPercent: number, models: 'ok' | 'fail' = 'ok') => (): AppServerProcess => {
       let lineCb: (line: string) => void = () => undefined;
       return {
         send: (line) => {
-          const m = JSON.parse(line) as { id?: number };
-          if (m.id === 1) queueMicrotask(() => { lineCb('{"id":1,"result":{}}'); });
-          if (m.id === 2) {
-            const result = { rateLimits: { primary: { usedPercent, windowDurationMins: 300 }, secondary: { usedPercent, windowDurationMins: 10080 } } };
-            queueMicrotask(() => { lineCb(JSON.stringify({ id: 2, result })); });
+          const m = JSON.parse(line) as { id?: number; method: string };
+          if (m.id === undefined) return;
+          let reply: object;
+          if (m.method === 'account/rateLimits/read') {
+            reply = { result: { rateLimits: { primary: { usedPercent, windowDurationMins: 300 }, secondary: { usedPercent, windowDurationMins: 10080 } } } };
+          } else if (m.method === 'model/list') {
+            reply =
+              models === 'fail'
+                ? { error: { code: -32603, message: 'secret me@example.com' } }
+                : { result: { data: [{ model: 'gpt-a', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }] }], nextCursor: null } };
+          } else {
+            reply = { result: {} };
           }
+          queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, ...reply })); });
         },
         onLine: (cb) => (lineCb = cb),
         onExit: () => undefined,
         kill: () => Promise.resolve(),
       };
     };
-    const route = async (argv: string[], percent: number) => {
+    const route = async (argv: string[], percent: number, models: 'ok' | 'fail' = 'ok') => {
       const cacheDir = mkdtempSync(join(tmpdir(), 'acl-route-'));
       try {
         let out = '';
         let error = '';
-        const code = await run(argv, { out: (t) => (out += t), error: (t) => (error += t) }, { exec, cacheDir, now: () => NOW, appServer: appServer(percent) });
+        const code = await run(argv, { out: (t) => (out += t), error: (t) => (error += t) }, { exec, cacheDir, now: () => NOW, appServer: appServer(percent, models) });
         return { code, out, error };
       } finally {
         rmSync(cacheDir, { recursive: true, force: true });
@@ -231,6 +239,51 @@ describe('cli', () => {
       const r = await route(['route', '--dry-run', '--task', 'review', '--prefer', 'codex'], 96);
       expect(r.out).toContain('recommended: codex');
       expect(r.out).toContain('caveat: quota-critical (codex)');
+    });
+
+    it('keeps the old output unchanged when no model/effort/mode flags are given', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'review'], 20);
+      expect(r.out).not.toMatch(/model:|effort:|mode:|manual-approval/);
+    });
+
+    it('verifies a Codex model and the ultra effort against the live registry', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'review', '--model', 'gpt-a', '--effort', 'ultra'], 20);
+      expect(r.out).toContain('recommended: codex');
+      expect(r.out).toContain('model: gpt-a (verified)');
+      expect(r.out).toContain('effort: ultra (verified)');
+      expect(r.out).toContain('manual-approval: not required');
+    });
+
+    it('reports model-not-listed and discovery failure as different things', async () => {
+      const missing = await route(['route', '--dry-run', '--task', 'review', '--model', 'gpt-zzz'], 20);
+      expect(missing.out).toContain('issue: model-not-listed [blocking] gpt-zzz');
+      expect(missing.out).toContain('manual-approval: required');
+      const down = await route(['route', '--dry-run', '--task', 'review', '--model', 'gpt-a'], 20, 'fail');
+      expect(down.out).toContain('issue: model-discovery-failed [unverified] gpt-a (error: request was rejected)');
+      expect(down.out).not.toContain('model-not-listed');
+      expect(down.out).not.toMatch(/secret|example/);
+    });
+
+    it('selects ultracode only on request and requires approval for it', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'planning', '--prefer', 'claude', '--mode', 'ultracode'], 20);
+      expect(r.out).toContain('recommended: claude');
+      expect(r.out).toContain('mode: ultracode');
+      expect(r.out).toContain('issue: mode-unverified [unverified] ultracode');
+      expect(r.out).toContain('manual-approval: required');
+      const normal = await route(['route', '--dry-run', '--task', 'planning', '--prefer', 'claude', '--model', 'auto', '--mode', 'normal'], 20);
+      // Explicit defaults equal the default request, so the output stays as before.
+      expect(normal.out).not.toMatch(/mode:|manual-approval/);
+    });
+
+    it('rejects ultracode as an effort and other bad selection flags', async () => {
+      const ultracode = await route(['route', '--dry-run', '--task', 'review', '--effort', 'ultracode'], 20);
+      expect(ultracode.code).toBe(2);
+      expect(ultracode.error).toContain('use --mode ultracode');
+      for (const extra of [['--mode', 'turbo'], ['--model', 'bad id!'], ['--effort', 'HIGH'], ['--model']]) {
+        const r = await route(['route', '--dry-run', '--task', 'review', ...extra], 20);
+        expect(r.code).toBe(2);
+        expect(r.out).toBe('');
+      }
     });
 
     it('requires --dry-run and a valid task and preference', async () => {

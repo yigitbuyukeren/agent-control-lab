@@ -149,4 +149,14 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
       rmSync(cache, { recursive: true, force: true });
     }
   });
+
+  it('route rejects ultracode as an effort through the real binary', () => {
+    expect(() =>
+      execFileSync(process.execPath, [bin, 'route', '--dry-run', '--task', 'review', '--effort', 'ultracode'], {
+        encoding: 'utf8',
+        stdio: 'pipe',
+        timeout: 20000,
+      }),
+    ).toThrow(/use --mode ultracode/);
+  });
 });

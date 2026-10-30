@@ -20,7 +20,7 @@ const STEPS={
  implement:{tr:'Uygulama',icon:'term',d:'Yalnızca izole çalışma ağacına yazar.',provider:()=> 'codex'},
  review:{tr:'İnceleme',icon:'shield',d:'Çıktıyı bağımsız olarak gözden geçirir.',provider:(w)=>w==='plan-review'?'codex':'claude'}};
 const PN={claude:'Claude',codex:'Codex'};
-const S={view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
+const S={cwd:'',timeout:300,previewKey:null,run:null,runLines:[],runCursor:0,timer:null,tick:null,view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
 const modelsOf=(p)=>{const g=(S.status&&S.status.models||[]).find((x)=>x.provider===p);return g?g.models:[]};
 const effortsFor=(p,id)=>{const ms=modelsOf(p);const m=ms.find((x)=>x.id===id);if(m)return m.efforts;const all=[];for(const x of ms)for(const e of x.efforts)if(!all.includes(e))all.push(e);return all};
 function toast(t){const e=h('div',{class:'toast',role:'alert'},t);document.body.append(e);setTimeout(()=>e.remove(),5000)}
@@ -38,14 +38,14 @@ const EVK=[['benchmark','Kıyaslama kanıtı'],['documentation','Dokümantasyon 
 
 /* ---------- shell ---------- */
 const NAV=[['run','flow','Orkestrasyon'],['providers','cpu','Sağlayıcılar'],['safety','lock','Güvenlik']];
-const TITLES={run:'Orkestrasyon önizlemesi',providers:'Sağlayıcılar ve kota',safety:'Güvenlik ve sınırlar'};
+const TITLES={run:'Orkestrasyon',providers:'Sağlayıcılar ve kota',safety:'Güvenlik ve sınırlar'};
 const app=$('#app');
 const nav=h('nav',{class:'nav','aria-label':'Ana gezinme'},h('div',{class:'brand'},h('div',{class:'logo'},IC('spark')),'Agent Control Lab'),
  NAV.map(([id,ic,t])=>h('button',{class:'navbtn','data-view':id,onclick:()=>go(id)},IC(ic),t)),
  h('div',{class:'navfoot'},IC('lock'),'v0.2 · yerel'));
 const topTitle=h('h1',{});const topPills=h('div',{style:null,class:'toppills'});
 const refreshBtn=h('button',{class:'iconbtn',title:'Durumu yenile','aria-label':'Durumu yenile',onclick:()=>loadStatus()},IC('refresh'));
-const topbar=h('header',{class:'top'},topTitle,h('span',{class:'pill safe'},IC('shield'),'Yalnızca önizleme'),topPills,refreshBtn);
+const topbar=h('header',{class:'top'},topTitle,h('span',{class:'pill safe'},IC('shield'),'Yerel · onaylı çalıştırma'),topPills,refreshBtn);
 const main=h('main',{});
 app.append(nav,topbar,main);
 function go(v){S.view=v;draw()}
@@ -53,6 +53,7 @@ function go(v){S.view=v;draw()}
 /* ---------- top status ---------- */
 function drawTop(){topTitle.textContent=TITLES[S.view];topPills.replaceChildren();topPills.className='toppills';topPills.style.display='contents';
  topPills.append(h('span',{class:'pill hideS'},h('span',{class:'dot ok'}),location.host));
+ if(runActive())topPills.append(h('span',{class:'pill'},h('span',{class:'dot warn'}),'Koşu sürüyor'));
  if(S.loading){topPills.append(h('span',{class:'pill'},h('span',{class:'skel',style:null}),'durum okunuyor…'));return}
  for(const p of(S.status&&S.status.providers)||[]){const ok=/logged in/.test(p.login||'');topPills.append(h('span',{class:'pill'},h('span',{class:'dot '+(ok?'ok':p.login?'warn':'bad')}),PN[p.id]))}
  for(const q of(S.status&&S.status.quota)||[]){const w=q.windows[0];if(w)topPills.append(h('span',{class:'pill hideS'},PN[q.provider]+' '+winName(w.label).split(' ')[0]+': %'+Math.round(w.usedPercent)))}}
@@ -60,7 +61,7 @@ function drawTop(){topTitle.textContent=TITLES[S.view];topPills.replaceChildren(
 /* ---------- run view ---------- */
 const R={};
 function buildRun(){
- R.task=h('textarea',{id:'task',maxlength:'20000',placeholder:'Örn. “Kullanıcı oturum süresini yapılandırılabilir yap ve testlerini ekle”',oninput:()=>{R.count.textContent=R.task.value.length.toLocaleString('tr-TR')+' / 20.000'},onkeydown:(e)=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter')preview()}});
+ R.task=h('textarea',{id:'task',maxlength:'20000',placeholder:'Örn. “Kullanıcı oturum süresini yapılandırılabilir yap ve testlerini ekle”',oninput:()=>{R.count.textContent=R.task.value.length.toLocaleString('tr-TR')+' / 20.000';drawRunBtn()},onkeydown:(e)=>{if((e.metaKey||e.ctrlKey)&&e.key==='Enter')preview()}});
  R.count=h('span',{},'0 / 20.000');
  R.flow=h('div',{class:'flow'});
  R.wf=h('div',{class:'seg',role:'group','aria-label':'İş akışı'});
@@ -68,29 +69,37 @@ function buildRun(){
  R.pol=h('div',{class:'seg',role:'group','aria-label':'Politika'});R.polHint=h('p',{class:'hint'});
  R.ws=h('input',{type:'text',id:'ws',autocomplete:'off',placeholder:'/yol/izole-calisma-agaci'});
  R.verify=h('input',{type:'text',id:'vc',autocomplete:'off',placeholder:'pnpm test'});
- R.wsBox=h('div',{class:'card'},h('h2',{},IC('doc'),'Çalışma ağacı'),h('p',{class:'hint'},'Var olan, bağlı bir Git çalışma ağacı. Önizlemede yazılmaz.'),
+ R.wsBox=h('div',{class:'card lockable'},h('h2',{},IC('doc'),'Çalışma ağacı'),h('p',{class:'hint'},'Var olan, bağlı bir Git çalışma ağacı. Önizlemede yazılmaz.'),
   h('label',{class:'l',for:'ws'},'Yol'),R.ws,h('div',{style:null},''),h('label',{class:'l',for:'vc',},'Doğrulama komutu (yalnızca gösterilir, çalıştırılmaz)'),R.verify);
- R.acc=h('input',{type:'checkbox',id:'acc',onchange:()=>{S.accept=R.acc.checked}});
+ R.acc=h('input',{type:'checkbox',id:'acc',onchange:()=>{S.accept=R.acc.checked;drawRunBtn()}});
  R.go=h('button',{class:'go',type:'button',onclick:preview},IC('play'),h('span',{},'Önizle (dry run)'));
- R.out=h('div',{class:'stack'});
+ R.out=h('div',{class:'stack'});R.runOut=h('div',{class:'stack'});
+ R.cwd=h('input',{type:'text',id:'cwd',autocomplete:'off',placeholder:'/yol/proje-dizini',oninput:()=>{drawRunBtn()}});
+ R.picker=h('div',{class:'picker',hidden:true});
+ R.tsel=h('select',{id:'tmo','aria-label':'Adım başına zaman aşımı',onchange:()=>{S.timeout=Number(R.tsel.value);drawRunBtn()}},[[120,'2 dakika'],[300,'5 dakika'],[600,'10 dakika'],[900,'15 dakika']].map(([v,t])=>h('option',{value:v},t)));R.tsel.value=String(S.timeout);
+ R.cwdBox=h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Proje dizini'),h('p',{class:'hint'},'Claude ve Codex bu dizinde çalışır (araçsız plan, salt okunur inceleme). Gerçek çalıştırma için seçilmesi zorunludur.'),
+  h('label',{class:'l',for:'cwd'},'Yol'),h('div',{class:'pathrow'},R.cwd,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.cwd.value.trim())}},'Gözat')),R.picker,
+  h('div',{class:'sp'}),h('label',{class:'l',for:'tmo'},'Adım başına zaman aşımı'),R.tsel);
+ R.runBtn=h('button',{class:'go run',type:'button',onclick:confirmRun},IC('play'),h('span',{},'Gerçek çalıştır (plan-review)'));
+ R.runNote=h('p',{class:'note'});
  R.view=h('div',{class:'view'},h('div',{class:'grid'},
   h('div',{class:'stack'},
-   h('section',{class:'card'},h('h2',{},IC('doc'),'Görev'),h('p',{class:'hint'},'Metin yalnızca bu önizleme için kullanılır; hiçbir yere kaydedilmez.'),R.task,h('div',{class:'meta'},R.count,h('span',{},'⌘/Ctrl + Enter ile önizle'))),
-   h('section',{class:'card'},h('h2',{},IC('flow'),'Akış'),h('p',{class:'hint'},'Her adım için model ve eforu elle seçebilirsiniz; elle seçim her zaman yönlendirmeden önce gelir.'),R.wf,h('div',{style:null,class:'sp'}),R.flow),
-   R.out),
+   h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Görev'),h('p',{class:'hint'},'Metin yalnızca bellekte tutulur; hiçbir yere kaydedilmez.'),R.task,h('div',{class:'meta'},R.count,h('span',{},'⌘/Ctrl + Enter ile önizle'))),
+   h('section',{class:'card lockable'},h('h2',{},IC('flow'),'Akış'),h('p',{class:'hint'},'Her adım için model ve eforu elle seçebilirsiniz; elle seçim her zaman yönlendirmeden önce gelir.'),R.wf,h('div',{style:null,class:'sp'}),R.flow),
+   R.runOut,R.out),
   h('aside',{class:'stack'},
-   h('section',{class:'card'},h('h2',{},IC('spark'),'Model yönlendirme'),h('p',{class:'hint'},'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez.'),R.routes),
-   h('section',{class:'card'},h('h2',{},IC('gauge'),'Politika'),R.polHint,R.pol),
-   R.wsBox,
-   h('section',{class:'card'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul ederek önizle ',h('code',{},'--accept-unverified'),'. Yalnızca önizlemeyi etkiler.'))),
-   R.go)));
+   h('section',{class:'card lockable'},h('h2',{},IC('spark'),'Model yönlendirme'),h('p',{class:'hint'},'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez.'),R.routes),
+   h('section',{class:'card lockable'},h('h2',{},IC('gauge'),'Politika'),R.polHint,R.pol),
+   R.wsBox,R.cwdBox,
+   h('section',{class:'card lockable'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul ederek önizle ',h('code',{},'--accept-unverified'),'. Yalnızca önizlemeyi etkiler.'))),
+   R.go,R.runBtn,R.runNote)));
  main.append(R.view)}
 function drawControls(){
  R.wf.replaceChildren(...Object.keys(FLOWS).map((id)=>h('button',{type:'button','aria-pressed':String(S.workflow===id),onclick:()=>{S.workflow=id;S.result=null;drawControls();drawFlow();drawResult()}},id==='plan-review'?'Plan → İnceleme':'Plan → Uygula → İncele')));
  R.routes.replaceChildren(...ROUTES.map((r)=>h('button',{type:'button',class:'route','aria-pressed':String(S.routing===r.id),onclick:()=>{S.routing=r.id;S.result=null;drawControls();drawResult()}},h('i',{class:'rd'}),h('b',{},r.name,r.badge?h('span',{class:'badge'},r.badge):null),h('span',{},r.d))));
  R.pol.replaceChildren(...POLICIES.map((p)=>h('button',{type:'button','aria-pressed':String(S.policy===p.id),onclick:()=>{S.policy=p.id;S.result=null;drawControls();drawResult()}},p.name)));
  R.polHint.textContent=POLICY_HINT[S.policy];
- R.wsBox.hidden=S.workflow!=='plan-implement-review'}
+ R.wsBox.hidden=S.workflow!=='plan-implement-review';R.cwdBox.hidden=S.workflow!=='plan-review';drawRunBtn()}
 function nodeResult(id){return S.result&&S.result.view.steps.find((x)=>x.id===id)}
 function drawFlow(){
  const ids=FLOWS[S.workflow];const kids=[];
@@ -108,9 +117,9 @@ function drawFlow(){
    h('div',{class:'fields'},h('span',{class:'chip'},h('span',{class:'dot',style:null}),PN[prov]),
     h('div',{},h('label',{class:'l'},'Model'),msel),h('div',{},h('label',{class:'l'},'Efor'),esel),
     manualClaude?h('p',{class:'why'},'Claude erişimi doğrulanamaz: elle seçim “doğrulanmamış” sayılır.'):null,
-    res?h('div',{},settingChip(res.model),' ',settingChip(res.effort)):null)));
+    res?h('div',{},settingChip(res.model),' ',settingChip(res.effort)):null,h('div',{class:'rstat','data-step':id}))));
   if(i<ids.length-1)kids.push(h('div',{class:'link'+(S.result?' live':''),'aria-hidden':'true'}))});
- R.flow.replaceChildren(...kids)}
+ R.flow.replaceChildren(...kids);updateNodes()}
 function drawResult(){
  R.out.replaceChildren();const res=S.result;
  if(!res){return}
@@ -121,6 +130,7 @@ function drawResult(){
  R.out.append(h('div',{class:'res'},...v.steps.map((s,i)=>stepCard(s,i))));
  const g=['policy','model routing','data flow','guarantees','managed policy'].filter((k)=>v.meta[k]);
  if(g.length)R.out.append(h('details',{},h('summary',{},IC('chev'),'Garantiler ve sınırlar (CLI)'),h('div',{class:'ev'},g.map((k)=>h('p',{},k+': '+v.meta[k])))));
+ drawRunBtn();
  R.out.append(h('details',{},h('summary',{},IC('chev'),'Ham CLI çıktısı'),h('pre',{},(res.output||'')+(res.errors?'\n--- stderr ---\n'+res.errors:''))))}
 function stepCard(s,i){
  const d=STEPS[s.id]||{tr:s.id,icon:'flow'};const ev=s.evidence||[];
@@ -139,15 +149,92 @@ function stepCard(s,i){
   card.append(h('details',{},h('summary',{},IC('chev'),'Kanıtlar ('+ev.length+')'),h('div',{class:'ev'},body)))}
  return card}
 function row(k,v,why){return h('div',{class:'row'},h('span',{class:'k'},k),h('div',{class:'v'},v,why?h('p',{class:'why'},'CLI gerekçesi: '+why):null))}
+function bodyNow(){const models={},efforts={};for(const id of FLOWS[S.workflow]){const st=S.steps[id];if(st.model)models[id]=st.model;if(st.effort)efforts[id]=st.effort}
+ const b={workflow:S.workflow,task:R.task.value,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,steps:{models,efforts},workspace:R.ws.value.trim(),verify:R.verify.value.trim(),timeoutSec:S.timeout};
+ if(S.workflow==='plan-review')b.cwd=R.cwd.value.trim();return b}
+const paramsKey=()=>JSON.stringify(bodyNow());
+const runActive=()=>!!S.run&&(S.run.status==='running'||S.run.status==='cancelling');
 async function preview(){
- if(S.busy)return;const task=R.task.value;
- if(task.trim()===''){toast('Önce bir görev metni girin.');R.task.focus();return}
- const models={},efforts={};for(const id of FLOWS[S.workflow]){const st=S.steps[id];if(st.model)models[id]=st.model;if(st.effort)efforts[id]=st.effort}
+ if(S.busy||runActive())return;
+ if(R.task.value.trim()===''){toast('Önce bir görev metni girin.');R.task.focus();return}
+ const key=paramsKey();
  S.busy=true;R.go.disabled=true;R.go.lastChild.textContent='Önizleniyor…';
- try{S.result=await api('/api/dry-run',{method:'POST',body:JSON.stringify({workflow:S.workflow,task,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,steps:{models,efforts},workspace:R.ws.value.trim(),verify:R.verify.value.trim()})});
+ try{S.result=await api('/api/dry-run',{method:'POST',body:key});
+  S.previewKey=(S.result.exitCode===0&&S.result.view.verdict==='would-run')?key:null;
   drawFlow();drawResult();R.out.scrollIntoView({behavior:'smooth',block:'nearest'})}
  catch(e){toast(String(e.message||e))}
- finally{S.busy=false;R.go.disabled=false;R.go.lastChild.textContent='Önizle (dry run)'}}
+ finally{S.busy=false;R.go.disabled=runActive();R.go.lastChild.textContent='Önizle (dry run)'}}
+
+/* ---------- real plan-review run ---------- */
+const SST={pending:'bekliyor',running:'çalışıyor',completed:'tamamlandı',failed:'başarısız',timeout:'zaman aşımı',cancelled:'iptal edildi',skipped:'atlandı'};
+const RST={running:'Çalışıyor',cancelling:'İptal ediliyor…',completed:'Tamamlandı',failed:'Başarısız',refused:'CLI ön kontrolü reddetti',cancelled:'İptal edildi',timeout:'Zaman aşımına uğradı'};
+const chipCls=(st)=>st==='completed'?'ok':(st==='failed'||st==='timeout'||st==='refused')?'bad':(st==='running'||st==='cancelling'||st==='cancelled'||st==='skipped')?'warn':'def';
+function drawRunBtn(){const pr=S.workflow==='plan-review',act=runActive();R.runBtn.hidden=!pr;
+ if(!pr){R.runNote.textContent='Bu iş akışı bu sürümde yalnızca önizlenebilir; gerçek çalıştırma yalnızca plan-review içindir.';return}
+ const dir=R.cwd.value.trim()!=='';
+ const ready=!!S.result&&S.result.exitCode===0&&S.result.view.verdict==='would-run'&&S.previewKey===paramsKey()&&dir&&!act;
+ R.runBtn.disabled=!ready;
+ R.runNote.textContent=act?'Bir koşu sürüyor; aynı anda yalnızca bir koşu çalışır.':ready?'Önizleme geçti. Gerçek çalıştırma ayrıca açık onay ister.':!dir?'Önce proje dizinini seçin.':'Gerçek çalıştırma için aynı ayarlarla geçen bir önizleme gerekir.'}
+function setLocked(on){R.view.querySelectorAll('.lockable').forEach((e)=>{e.inert=on;e.style.opacity=on?'.65':''});R.go.disabled=on||S.busy}
+function updateNodes(){document.querySelectorAll('.node').forEach((n)=>{const el=n.querySelector('.rstat');if(!el)return;const id=el.dataset.step;const st=S.run&&S.run.steps.find((x)=>x.id===id);
+ n.classList.toggle('running',!!st&&st.status==='running');el.replaceChildren();if(!st)return;
+ el.append(h('span',{class:'chip '+chipCls(st.status)},'Koşu: '+SST[st.status]+(st.seconds!=null?' · '+st.seconds.toFixed(1)+' sn':'')))})}
+function elapsed(){if(!S.run)return'';const end=S.run.endedAt||Date.now();const s=Math.max(0,Math.round((end-S.run.startedAt)/1000));return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
+function drawRun(){const r=S.run;R.runOut.replaceChildren();setLocked(runActive());drawTop();updateNodes();drawRunBtn();if(!r)return;
+ const act=runActive();
+ const head=h('div',{class:'runhead'},h('h2',{},IC('play'),'Gerçek koşu',h('span',{class:'chip '+chipCls(r.status)},RST[r.status]||r.status)),h('span',{class:'chip def',id:'elapsed'},elapsed()),
+  act?h('button',{type:'button',class:'chipbtn danger',disabled:r.status==='cancelling',onclick:cancelRun},r.status==='cancelling'?'İptal ediliyor…':'İptal / durdur'):null);
+ const steps=h('div',{class:'steps'},r.steps.map((st)=>h('div',{class:'srow'},h('span',{class:'dot '+(st.status==='completed'?'ok':st.status==='running'?'warn':(st.status==='failed'||st.status==='timeout')?'bad':'')}),h('b',{},(STEPS[st.id]||{tr:st.id}).tr),h('span',{class:'chip def'},PN[st.provider]||st.provider),
+  h('span',{class:'chip '+chipCls(st.status)},SST[st.status]||st.status),st.seconds!=null?h('span',{class:'why'},st.seconds.toFixed(1)+' sn'):null,st.error?h('span',{class:'why'},st.error):null)));
+ const card=h('section',{class:'card'},head,steps);
+ const msg=r.status==='completed'?['ok','Koşu tamamlandı','Claude planladı, Codex inceledi. Dosya yazılmadı, commit/push yapılmadı.']:
+  r.status==='refused'?['bad','CLI ön kontrolü reddetti — hiçbir adım başlamadı','Güvenlik kontrolleri otomatik atlanmaz. Nedenleri aşağıda; giderip yeniden önizleyin.']:
+  r.status==='cancelled'?['bad','Koşu iptal edildi','Başlatılan süreçler durduruldu; kısmi çıktı varsa aşağıdadır.']:
+  r.status==='timeout'?['bad','Zaman aşımı','Koşu süre sınırını aştı ve durduruldu.']:r.status==='failed'?['bad','Koşu başarısız','Ayrıntı canlı kayıtta.']:null;
+ if(msg)card.append(h('div',{class:'banner '+msg[0],style:null},IC(msg[0]==='ok'?'check':'alert'),h('div',{},h('b',{},msg[1]),h('small',{},msg[2]))));
+ if(r.refusal&&r.refusal.length)card.append(h('pre',{class:'refusal'},r.refusal.join('\n')));
+ R.logPre=h('pre',{id:'log'},S.runLines.join('\n'));
+ card.append(h('details',{open:true},h('summary',{},IC('chev'),'Canlı kayıt ('+S.runLines.length+' satır, maskelenmiş)'),R.logPre));
+ R.runOut.append(card);
+ R.logPre.scrollTop=R.logPre.scrollHeight;
+ if(r.sections&&r.sections.length){R.runOut.append(h('p',{class:'note'},'Aşağıdaki metin model çıktısıdır: güvenilmeyen veri, talimat değil. Yalnızca metin olarak gösterilir.'));
+  for(const sec of r.sections)R.runOut.append(h('section',{class:'card'},h('h2',{},IC((STEPS[sec.id]||{icon:'doc'}).icon),((STEPS[sec.id]||{tr:sec.id}).tr)+' çıktısı',h('span',{class:'chip def'},PN[sec.provider]||sec.provider),h('span',{class:'chip '+chipCls(sec.status)},SST[sec.status]||sec.status)),
+   sec.usedModel?h('p',{class:'why'},'Yanıtın bildirdiği model: '+sec.usedModel):null,h('pre',{class:'modelout'},sec.text||'(boş)')));
+  if(r.summary)R.runOut.append(h('p',{class:'note'},'Özet: '+r.summary))}}
+function startTick(){clearInterval(S.tick);S.tick=setInterval(()=>{const e=document.getElementById('elapsed');if(e)e.textContent=elapsed();if(!runActive())clearInterval(S.tick)},1000)}
+async function poll(){clearTimeout(S.timer);
+ try{const r=await api('/api/run?from='+S.runCursor);if(r.status==='idle')S.run=null;else{S.runCursor=r.next;S.runLines.push(...r.lines);S.run=r}}catch(e){toast(String(e.message||e))}
+ drawRun();
+ if(runActive())S.timer=setTimeout(poll,700);else{clearInterval(S.tick);loadStatus()}}
+async function startRun(){const b=bodyNow();b.confirm=true;
+ S.previewKey=null;
+ try{S.run=await api('/api/run',{method:'POST',body:JSON.stringify(b)});S.runLines=[];S.runCursor=S.run.next||0;S.runLines.push(...(S.run.lines||[]));drawRun();startTick();S.timer=setTimeout(poll,500);R.runOut.scrollIntoView({behavior:'smooth',block:'nearest'})}
+ catch(e){toast(String(e.message||e))}}
+async function cancelRun(){try{await api('/api/run/cancel',{method:'POST',body:'{}'});toast('İptal isteği gönderildi.')}catch(e){toast(String(e.message||e))}}
+function confirmRun(){if(!S.result)return;const v=S.result.view;const dlg=h('dialog',{class:'dlg','aria-labelledby':'dlgt'});
+ const stp=(id)=>{const s=v.steps.find((x)=>x.id===id);return s?(s.model?s.model.value:'?')+' · efor: '+(s.effort?s.effort.value:'?'):'?'};
+ const q=((S.status&&S.status.quota)||[]).map((x)=>PN[x.provider]+': '+x.windows.map((w)=>winName(w.label)+' %'+Math.round(w.usedPercent)).join(', ')).join(' | ')||'okunamadı (tahmin gösterilmez)';
+ const c1=h('input',{type:'checkbox',id:'c1'}),c2=S.accept?h('input',{type:'checkbox',id:'c2'}):null;
+ const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();startRun()}},IC('play'),h('span',{},'Gerçek çalıştırmayı başlat'));
+ const upd=()=>{go.disabled=!(c1.checked&&(!c2||c2.checked))};c1.addEventListener('change',upd);if(c2)c2.addEventListener('change',upd);
+ dlg.append(h('h2',{id:'dlgt'},IC('alert'),'Gerçek çalıştırmayı onayla'),
+  h('div',{class:'facts'},h('div',{},h('span',{class:'k'},'Proje dizini'),h('code',{},R.cwd.value.trim())),h('div',{},h('span',{class:'k'},'Plan (Claude)'),h('code',{},stp('plan'))),h('div',{},h('span',{class:'k'},'İnceleme (Codex)'),h('code',{},stp('review'))),
+   h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q))),
+  h('p',{class:'why'},'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Claude araçsız planlar, Codex salt okunur inceler; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
+  h('label',{class:'switch',for:'c1'},c1,h('span',{},'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
+  c2?h('label',{class:'switch',for:'c2'},c2,h('span',{},'Doğrulanamayan ayarları (örn. proxy/ortam) kendim kabul ediyorum; bu seçim önizlemeyle aynıdır.')):null,
+  h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go));
+ document.body.append(dlg);dlg.addEventListener('close',()=>{dlg.remove()});dlg.showModal()}
+async function browse(path){
+ try{const r=await api('/api/dirs?path='+encodeURIComponent(path||''));const sep=r.path.includes('\\')&&!r.path.includes('/')?'\\':'/';
+  R.picker.hidden=false;
+  R.picker.replaceChildren(h('div',{class:'pkh'},h('code',{},r.path)),
+   r.parent?h('button',{type:'button',class:'pk',onclick:()=>{browse(r.parent)}},'↑ Üst dizin'):null,
+   ...r.dirs.map((d)=>h('button',{type:'button',class:'pk',onclick:()=>{browse(r.path.replace(/[\\/]+$/,'')+sep+d)}},IC('doc'),d)),
+   r.dirs.length===0?h('p',{class:'why',style:null},'Alt dizin yok.'):null,
+   h('div',{class:'pkf'},h('button',{type:'button',class:'chipbtn',onclick:()=>{R.cwd.value=r.path;R.picker.hidden=true;drawRunBtn()}},'Bu dizini seç'),h('button',{type:'button',class:'chipbtn',onclick:()=>{R.picker.hidden=true}},'Kapat')))}
+ catch(e){toast(String(e.message||e))}}
+window.addEventListener('beforeunload',(e)=>{if(runActive())e.preventDefault()});
 
 /* ---------- providers & safety ---------- */
 function quotaBlock(p){const q=((S.status&&S.status.quota)||[]).find((x)=>x.provider===p);
@@ -172,12 +259,14 @@ function drawSafety(){
  main.replaceChildren(h('div',{class:'view stack'},h('section',{class:'card'},h('h2',{},IC('lock'),'Bu arayüz neyi yapar, neyi yapmaz'),
   h('ul',{class:'list'},[
   'Yalnızca bu bilgisayarın döngü arayüzünde (127.0.0.1) dinler; her istek bu başlatmaya özel rastgele bir anahtar ve doğru Host/Origin ister.',
-  'Önizleme gerçek CLI’nın “orchestrate --dry-run” komutuyla üretilir. Hiçbir ajan başlatılmaz, model çağrısı yapılmaz, dosya yazılmaz.',
-  'Görev metni, sonuçlar ve ayarlar kaydedilmez; tarayıcı depolaması kullanılmaz. Sayfayı yenilemek her şeyi sıfırlar.',
+  'Önizleme gerçek CLI’nın “orchestrate --dry-run” komutuyla üretilir: ajan başlatılmaz, model çağrısı yapılmaz, dosya yazılmaz. Koşu da aynı CLI/çekirdek orkestrasyonunu kullanır; ayrı bir yürütücü yoktur.',
+  'Görev metni, çıktılar ve ayarlar diske ya da tarayıcı depolamasına yazılmaz; yalnızca sunucu belleğinde son koşu tutulur (sunucu kapanınca silinir).',
   'Sır, API anahtarı ya da oturum bilgisi gösterilmez veya saklanmaz. Kota yalnızca yerel okumadan gelir; yoksa “veri yok” yazılır.',
   'Sayfa dış kaynak yüklemez (yazı tipi, betik, görsel yok) ve sıkı bir içerik güvenlik ilkesiyle sunulur.',
   'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez; ultracode seçilmez.',
-  'Gerçek çalıştırma bu sürümde yoktur; CLI’daki “orchestrate --confirm” ile yapılır.'].map(li))),
+  'Gerçek çalıştırma yalnızca plan-review içindir: aynı ayarlarla geçen bir önizleme, proje dizini ve açık onay ister; aynı anda tek koşu, adım zaman aşımı, genel süre sınırı ve kota (≥%95 ise başlamaz) uygulanır. plan-implement-review yalnızca önizlenir.',
+  'CLI ön kontrolü (proxy/TLS, oturum, güvenlik) reddederse bu açıkça gösterilir ve otomatik atlanmaz. API anahtarı geri dönüşü, otomatik commit/push ve yeniden deneme yoktur.',
+  'Canlı kayıt ve çıktı gösterilmeden önce bilinen sır kalıplarından (anahtar, token, parola, Bearer) arındırılır; bu en iyi çabadır, tam güvence değildir. Model çıktısı yalnızca metin olarak gösterilir.'].map(li))),
   h('section',{class:'card'},h('h2',{},IC('book'),'Kanıt türleri'),h('ul',{class:'list'},[
   'Kıyaslama kanıtı: aynı kıyaslama, sürüm ve eforla karşılaştırılabilir yayımlanmış sonuçlar (katı kurallar).',
   'Dokümantasyon: sağlayıcının belgelediği model amacı. Bir ölçüm değildir; belirsizliği her zaman gösterilir.',
@@ -186,7 +275,7 @@ function drawSafety(){
 function draw(){
  nav.querySelectorAll('.navbtn').forEach((b)=>{if(b.dataset.view===S.view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
  drawTop();
- if(S.view==='run'){main.replaceChildren(R.view);drawControls();drawFlow();drawResult()}
+ if(S.view==='run'){main.replaceChildren(R.view);drawControls();drawFlow();drawResult();drawRun()}
  else if(S.view==='providers')drawProviders();else drawSafety()}
 async function loadStatus(){S.loading=true;refreshBtn.classList.add('spin');draw();
  try{S.status=await api('/api/status')}catch(e){toast('Durum okunamadı: '+String(e.message||e))}

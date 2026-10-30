@@ -21,7 +21,7 @@ if (process.argv[2] === 'gui') {
     error: (text) => process.stderr.write(text),
   }, {
     signal: controller.signal,
-    run: (argv, io) => run(argv, io, { signal: controller.signal, ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }) }),
+    run: (argv, io, signal) => run(argv, io, { signal: signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal]), ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }) }),
   });
 } else process.exitCode = await run(
   process.argv.slice(2),

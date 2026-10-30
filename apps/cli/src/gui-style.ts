@@ -88,6 +88,21 @@ table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left
 .skel{height:14px;border-radius:6px;background:linear-gradient(90deg,var(--panel) 25%,var(--panel2) 50%,var(--panel) 75%);background-size:200% 100%;animation:shine 1.2s linear infinite}
 .list{margin:0;padding-left:18px;color:var(--dim)}.list li{margin:5px 0}
 .toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--bad);color:var(--fg);padding:10px 14px;border-radius:11px;animation:rise .25s ease both;z-index:20;max-width:360px}
+.pathrow{display:flex;gap:8px}.pathrow input{flex:1;min-width:0}
+.chipbtn{border:1px solid var(--line2);background:var(--panel);color:var(--fg);border-radius:9px;padding:6px 12px;cursor:pointer;white-space:nowrap;transition:.15s}.chipbtn:hover{border-color:var(--acc)}.chipbtn:disabled{opacity:.5;cursor:default}
+.chipbtn.danger{border-color:rgba(255,107,122,.5);color:var(--bad)}.chipbtn.danger:hover{background:rgba(255,107,122,.1)}
+.picker{border:1px solid var(--line);border-radius:10px;background:var(--bg2);max-height:280px;overflow:auto;margin-top:8px}
+.pkh{padding:8px 10px;border-bottom:1px solid var(--line);color:var(--dim);font-size:12px;overflow-wrap:anywhere}.pkf{display:flex;gap:8px;padding:8px 10px;border-top:1px solid var(--line);position:sticky;bottom:0;background:var(--bg2)}
+.pk{display:flex;gap:8px;align-items:center;width:100%;border:0;background:none;color:var(--fg);padding:7px 10px;text-align:left;cursor:pointer}.pk:hover{background:var(--panel2)}
+.go.run{margin-top:10px;background:linear-gradient(135deg,var(--ok),var(--acc2));box-shadow:0 8px 24px rgba(61,220,151,.22)}.go.run:disabled{background:var(--panel2);color:var(--mute);box-shadow:none;cursor:not-allowed}
+.runhead{display:flex;align-items:center;gap:10px;margin-bottom:12px}.runhead h2{margin:0;margin-right:auto}.steps{display:grid;gap:8px;margin-bottom:12px}
+.srow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:8px 10px;border:1px solid var(--line);border-radius:10px;background:var(--bg2)}
+.node.running{border-color:var(--acc2);box-shadow:0 0 0 3px rgba(56,214,196,.12);animation:pulse 1.4s ease-in-out infinite}.rstat{margin-top:8px}
+pre.refusal{border:1px solid rgba(255,107,122,.4);border-radius:10px;background:rgba(255,107,122,.05);color:var(--fg);margin:10px 0}pre.modelout{background:var(--bg2);border:1px solid var(--line);border-radius:10px;color:var(--fg)}
+.dlg{background:var(--panel);color:var(--fg);border:1px solid var(--line2);border-radius:16px;padding:20px;max-width:540px;width:calc(100% - 32px)}.dlg::backdrop{background:rgba(0,0,0,.65);backdrop-filter:blur(4px)}
+.dlg h2{margin:0 0 12px;font-size:16px}.facts{display:grid;gap:6px;margin-bottom:12px}.facts div{display:flex;gap:10px;align-items:baseline}.facts .k{width:120px;color:var(--mute);font-size:12px;flex:none}.facts code{font:12.5px var(--mono);overflow-wrap:anywhere}
+.dlgbtn{display:flex;gap:10px;justify-content:flex-end;margin-top:14px}.dlgbtn .go{width:auto;padding:10px 18px}
+@keyframes pulse{50%{box-shadow:0 0 0 6px rgba(56,214,196,.05)}}
 @keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}@keyframes spin{to{transform:rotate(360deg)}}
 @keyframes dash{to{background-position:18px 0}}@keyframes shine{to{background-position:-200% 0}}
 @media(max-width:1020px){.grid{grid-template-columns:minmax(0,1fr)}}.stack,.card{min-width:0}

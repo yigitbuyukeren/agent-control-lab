@@ -97,7 +97,7 @@ describe('gui server', () => {
     expect((await post(base, 'x'.repeat(70_000))).status).toBe(413);
     expect((await post(base, { ...good, workflow: 'x' })).status).toBe(400);
     expect((await fetch(`${base}/nothing`)).status).toBe(404);
-    expect((await fetch(`${base}/api/dry-run`)).status).toBe(404);
+    expect((await fetch(`${base}/api/dry-run`)).status).toBe(403);
     expect(calls).toEqual([]);
   });
   it('serves parsed status only with the token and runs just read-only commands', async () => {
@@ -143,5 +143,104 @@ describe('parseGuiArgs', () => {
     expect(parseGuiArgs(['--port', '5000'])).toBe(5000);
     expect(typeof parseGuiArgs(['--port', 'x'])).toBe('string');
     expect(typeof parseGuiArgs(['--open'])).toBe('string');
+  });
+});
+
+describe('real plan-review run gate', () => {
+  const body = (over: Record<string, unknown> = {}) => ({ ...good, routing: 'auto', cwd: '/tmp/proj', timeoutSec: 120, ...over });
+  const fake = (calls: string[][], opts: { quota?: string; hang?: boolean; code?: number } = {}) =>
+    createGuiServer({
+      token: TOKEN,
+      watchdogMs: 5000,
+      run: (argv, io, signal) => {
+        calls.push([...argv]);
+        if (argv[0] === 'quota') { io.out(opts.quota ?? 'Codex plan: plus\n  5h window (primary): 3% used\n'); return Promise.resolve(0); }
+        if (argv.includes('--dry-run')) { io.out('orchestrate plan (dry run, no agent started)\n  verdict: would run\n'); return Promise.resolve(0); }
+        io.error('step 1/2 plan [claude] running\n');
+        if (opts.hang === true) return new Promise((resolve) => { signal?.addEventListener('abort', () => { resolve(130); }); });
+        io.error('step 1/2 plan [claude] completed (1.0s)\nstep 2/2 review [codex] completed (1.0s)\n');
+        io.out('== step 1/2 plan [claude] completed (1.0s) ==\nPLAN sk-abcdefghijklmnopqrstuv\n\nsummary: plan-review completed\n');
+        return Promise.resolve(opts.code ?? 0);
+      },
+    });
+  const boot = async (server: ReturnType<typeof fake>) => {
+    open.push(server);
+    return `http://127.0.0.1:${String(await listenGui(server, 0))}`;
+  };
+  const get = (base: string, path: string) => fetch(`${base}${path}`, { headers: { 'x-acl-token': TOKEN } });
+  const settle = async (base: string) => {
+    for (let i = 0; i < 50; i += 1) {
+      const snap = (await (await get(base, '/api/run')).json()) as { status: string };
+      if (snap.status !== 'running' && snap.status !== 'cancelling') return snap as { status: string; steps: { status: string }[]; lines: string[]; sections?: { text: string }[] };
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error('run did not settle');
+  };
+
+  it('needs explicit confirmation, a project directory, plan-review only and a matching preview', async () => {
+    const calls: string[][] = [];
+    const base = await boot(fake(calls));
+    const run = (b: unknown) => fetch(`${base}/api/run`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, body: JSON.stringify(b) });
+    expect((await run(body())).status).toBe(400); // no confirm
+    expect((await run(body({ confirm: true, workflow: 'plan-implement-review', workspace: '/w' }))).status).toBe(400);
+    expect((await run(body({ confirm: true, cwd: '' }))).status).toBe(400);
+    expect((await run(body({ confirm: true }))).status).toBe(409); // no preview yet
+    expect(calls.filter((c) => !c.includes('--dry-run'))).toEqual([]);
+  });
+
+  it('runs once after a matching preview, masks output, and a changed task needs a new preview', async () => {
+    const calls: string[][] = [];
+    const base = await boot(fake(calls));
+    const api = (path: string, b: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, body: JSON.stringify(b) });
+    expect((await api('/api/dry-run', body())).status).toBe(200);
+    expect((await api('/api/run', body({ confirm: true, task: 'changed' }))).status).toBe(409);
+    expect((await api('/api/run', body({ confirm: true }))).status).toBe(202);
+    const done = await settle(base);
+    expect(done.status).toBe('completed');
+    expect(done.steps.map((s) => s.status)).toEqual(['completed', 'completed']);
+    expect(JSON.stringify(done)).not.toContain('sk-abcdefghijklmnopqrstuv');
+    expect(done.sections?.[0]?.text).toContain('[maskelendi]');
+    const real = calls.find((c) => c.includes('--confirm'));
+    expect(real).toEqual(expect.arrayContaining(['orchestrate', '--workflow', 'plan-review', '--cwd', '/tmp/proj', '--timeout', '120', '--no-record']));
+    expect(real).not.toContain('--dry-run');
+    expect(real).not.toContain('--accept-unverified');
+    expect((await api('/api/run', body({ confirm: true }))).status).toBe(409); // preview was used up
+  });
+
+  it('allows one run at a time, blocks previews meanwhile, and cancels', async () => {
+    const calls: string[][] = [];
+    const base = await boot(fake(calls, { hang: true }));
+    const api = (path: string, b: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, body: JSON.stringify(b) });
+    await api('/api/dry-run', body());
+    expect((await api('/api/run', body({ confirm: true }))).status).toBe(202);
+    await api('/api/dry-run', body({ task: 'other' })).then((r) => { expect(r.status).toBe(409); });
+    expect((await api('/api/run', body({ confirm: true }))).status).toBe(409);
+    expect((await get(base, '/api/status')).status).toBe(409);
+    expect(((await (await api('/api/run/cancel', {})).json()) as { cancelled: boolean }).cancelled).toBe(true);
+    expect((await settle(base)).status).toBe('cancelled');
+  });
+
+  it('refuses to start when quota is nearly used up, and shows a failed run as failed', async () => {
+    const full = await boot(fake([], { quota: 'Codex plan: plus\n  5h window (primary): 97% used\n' }));
+    const post2 = (base: string, path: string, b: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, body: JSON.stringify(b) });
+    await post2(full, '/api/dry-run', body());
+    const res = await post2(full, '/api/run', body({ confirm: true }));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('quota');
+    expect((await get(full, '/api/run')).status).toBe(200);
+    expect(((await (await get(full, '/api/run')).json()) as { status: string }).status).toBe('idle');
+    const bad = await boot(fake([], { code: 1 }));
+    await post2(bad, '/api/dry-run', body());
+    await post2(bad, '/api/run', body({ confirm: true }));
+    expect((await settle(bad)).status).toBe('failed');
+  });
+
+  it('lists only directories, needs the token, and rejects relative paths', async () => {
+    const base = await boot(fake([]));
+    expect((await fetch(`${base}/api/dirs?path=/tmp`)).status).toBe(403);
+    expect((await get(base, '/api/dirs?path=relative')).status).toBe(400);
+    const ok = (await (await get(base, `/api/dirs?path=${encodeURIComponent(process.cwd())}`)).json()) as { path: string; dirs: string[] };
+    expect(ok.path).toBe(process.cwd());
+    expect(ok.dirs.every((d) => !d.startsWith('.'))).toBe(true);
   });
 });

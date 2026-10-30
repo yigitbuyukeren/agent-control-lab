@@ -325,10 +325,20 @@ How the intent-based choice is made (all heuristics are labelled as such in the 
 - The documentation pages state no date; the guide records when they were read (2026-10-31). Vendor descriptions are
   marketing-adjacent intent, not proof of performance on your task; that is why this basis carries medium uncertainty at best.
 
-## Local GUI (v0.2, dry-run preview only)
+## Local GUI (v0.3: preview, and a real `plan-review` run)
 
 `pnpm cli gui [--port <n>]` (default 4173) serves a Turkish dark dashboard at `http://127.0.0.1:<port>/` (side navigation on wide screens, bottom bar on narrow ones). Views: orchestration (task editor, workflow, a visual Plan → Implement → Review flow with per-step model/effort selects, the five `--model-routing` modes, `--policy`, workspace and verify fields shown only for `plan-implement-review`), providers (install, login, real quota windows, model tables) and safety.
 
 Results are cards per step built from the real `orchestrate --dry-run` output: selected model and effort with their verified/default state, verification, basis, uncertainty, and an expandable evidence panel that keeps strict benchmark evidence apart from documentation-based reading. The raw CLI text is kept in a collapsed details section. Quota comes only from the local `quota` command; where none is available (Claude today) the page says so and shows nothing made up.
 
 Safety is unchanged from v0.1: loopback only; per-start random token plus Host/Origin checks on every API call; the server builds the argument vector itself, always with `--dry-run --no-record` and never a confirm flag (`--accept-unverified` is only added when you tick the preview option); `/api/status` runs only the read-only `providers`, `auth-status`, `quota` and `models` commands; no external resources, strict CSP, no browser storage, nothing stored or logged.
+
+### Real `plan-review` run (v0.3)
+
+Only `plan-review` can run for real; `plan-implement-review` stays preview-only. A run is the same `orchestrate --workflow plan-review --confirm` the CLI runs (no second executor), started in-process with an abort signal, and the page polls its progress.
+
+Gates, all enforced by the server and not only by the page: a project directory is chosen (a directory-only picker lists folder names, nothing else); a dry-run preview with exactly the same settings has just succeeded with `would run` (valid 10 minutes, one use); the request carries an explicit `confirm` set from a dialog that needs a checkbox (and a second one when `--accept-unverified` was ticked); only one run exists at a time (previews and status wait or are refused meanwhile); a run does not start when a read quota window is at 95% or more (unknown quota is shown as unknown, not guessed). The per-step timeout (2 to 15 minutes) goes to the CLI, and a whole-run watchdog (twice that plus a minute) aborts a stuck run.
+
+Cancel/stop aborts the run's signal, which makes the existing orchestration stop its child processes; the page shows `cancelling` until it has actually settled. Closing the GUI server with Ctrl+C does the same and waits. Preflight refusals (proxy/TLS variables, login, policy) are shown verbatim as a refusal with no step started; nothing is skipped automatically. There is no retry, provider fallback, API-key use, commit or push, and runs use `--no-record`.
+
+The log and output shown are masked first (API keys, tokens, Bearer headers, passwords, URL credentials, private keys, the GUI's own token). This is best-effort pattern masking, not a guarantee. Model output is shown as text only and labelled untrusted. Only the last run's masked log is kept, in server memory. There is no token streaming: the CLI returns each step's answer when the step ends, so live progress is the step status lines and the answers appear as steps finish.

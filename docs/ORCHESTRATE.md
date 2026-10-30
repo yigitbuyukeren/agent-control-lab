@@ -245,3 +245,35 @@ directory (`ACL_CACHE_DIR` overrides it), owner-only where the platform allows i
 - **Errors and timeouts:** each group line shows pass, fail, error, timeout, the share of runs that ended in error or
   timeout, unmeasured runs, median seconds and days covered. A model whose better pass rate hides many failed runs is
   not chosen: its error/timeout share must be at most 20% and at most 10 points above every rival's.
+
+## Research routing: `--model-routing research`
+
+Recommends a model from **published benchmark results** kept in a versioned catalog
+(`packages/core/src/evidence-catalog.ts`, version `2026-10-30.1`). Each entry records the source URL, the date the source
+published it and the date it was read, benchmark and version, the model id and the variant exactly as the source labels it,
+the effort the score was measured at, and a confidence level. It makes no model call and runs no benchmark.
+
+- **Sources and confidence:** `independent` (Artificial Analysis, one method for all models): high. `official-vendor`
+  (a vendor's own launch page): medium. `community` (a forum user's report): low, shown as a supporting note and never
+  used to decide anything.
+- **What is compared:** only scores from the same group with the same benchmark, benchmark version, unit **and** effort
+  setting. Different benchmarks, versions, units or efforts are never compared; an effort a source does not state
+  (`unspecified`) is not usable. Coding steps (`implement`) need an agentic-coding benchmark, planning and review need a
+  reasoning benchmark.
+- **Difficulty:** from the task text (size class and the risky-keyword check, both heuristics). Easy tasks keep the default. The
+  evidence must be measured at an effort at least as high as the step aims for.
+- **Sufficient evidence:** at least two models this step can use now, a lead of at least 3 index points or 5 percentage
+  points, evidence not older than 120 days, and either an independently produced comparison or two agreeing
+  comparisons. Conflicting comparisons, a tie or a single vendor table keep the provider default.
+- **Access:** a Codex model is chosen only if the provider lists it now. A Claude model is never pinned (nothing proves the
+  account can use it): the dry run shows what the evidence favours as advice and `claude access: UNKNOWN`.
+- **Prices:** deliberately not recorded or used. An API price per token says nothing about your subscription quota.
+- **Manual wins:** `--step-model` / `--step-effort` are never overridden; the chosen model then gets the effort from
+  `--policy`. Ultracode is never selected.
+- **Dry run:** prints, per step, the decision, every comparison with its scores, benchmark, effort, confidence, source URL and
+  dates, what was ignored and why, and any low-confidence notes.
+- **Limits of the shipped data:** it is small and was read through a text-extraction tool on 2026-10-30; OpenAI's own
+  launch pages could not be fetched (HTTP 403), so no OpenAI-published figure is included. Today the one usable comparison
+  is the Artificial Analysis Intelligence Index v5.0 at max effort (a general reasoning index, not a coding benchmark), so
+  coding steps have no comparable Codex evidence and keep the default. Re-check a figure at its URL before relying on it;
+  to update, add entries from a page you opened, with its URL and date, and bump the catalog version.

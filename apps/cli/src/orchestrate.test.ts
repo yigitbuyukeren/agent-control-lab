@@ -429,3 +429,71 @@ describe('orchestrate --model-routing measured / --no-record', () => {
     expect(none.error).not.toContain('outcomes:');
   });
 });
+
+describe('orchestrate --model-routing research', () => {
+  const server = (...ids: string[]) => (): AppServerProcess => {
+    let lineCb: (line: string) => void = () => undefined;
+    return {
+      send: (line) => {
+        const m = JSON.parse(line) as { id?: number; method: string };
+        if (m.id === undefined) return;
+        const eff = ['low', 'medium', 'high'].map((reasoningEffort) => ({ reasoningEffort }));
+        const reply = m.method === 'model/list' ? { result: { data: ids.map((model) => ({ model, supportedReasoningEfforts: eff })), nextCursor: null } } : { result: {} };
+        queueMicrotask(() => { lineCb(JSON.stringify({ id: m.id, ...reply })); });
+      },
+      onLine: (cb) => (lineCb = cb),
+      onExit: () => undefined,
+      kill: () => Promise.resolve(),
+    };
+  };
+  const both = server('gpt-6.1-sol', 'gpt-6.1-terra');
+  const hard = ['orchestrate', '--workflow', 'plan-review', '--task', 'fix the auth token handling', '--model-routing', 'research'];
+
+  it('parses the option', () => {
+    expect(parseOrchestrateArgs(['--workflow', 'plan-review', '--task', 'x', '--dry-run', '--model-routing', 'research'])).toMatchObject({ modelRouting: 'research' });
+  });
+
+  it('pins the Codex model the published comparison favours and shows sources, dates, versions and confidence', async () => {
+    const dry = await go([...hard, '--dry-run'], { appServer: both });
+    expect(dry.out).toContain('model routing: research');
+    expect(dry.out).toContain('model: gpt-6.1-sol (verified); reason: adaptive routing: gpt-6.1-sol: leads comparable published results');
+    expect(dry.out).toContain('evidence: gpt-6.1-sol 55 points: Artificial Analysis Intelligence Index v5.0, effort max, independent (confidence high)');
+    expect(dry.out).toContain('source https://artificialanalysis.ai/models/gpt-6-1-sol (published 2026-09-29, read 2026-10-30)');
+    expect(dry.out).toContain('evidence catalog 2026-10-30.1');
+    expect(dry.out).toContain('prices are not used');
+    expect(dry.out).toContain('verdict: would run');
+    const live = await go([...hard, '--confirm'], { appServer: both });
+    expect(live.specs[1]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-6.1-sol']));
+  });
+
+  it('never pins a Claude model: the plan step only gets advice, with access marked UNKNOWN', async () => {
+    const dry = await go([...hard, '--dry-run'], { appServer: both });
+    expect(dry.out).toContain('the evidence favours claude-opus-5-5, but a Claude model cannot be shown to be accessible');
+    expect(dry.out).toContain('claude access: UNKNOWN');
+    const live = await go([...hard, '--confirm'], { appServer: both });
+    expect(live.specs[0]?.args).not.toContain('--model');
+  });
+
+  it('keeps the provider default when the model is not listed, for easy tasks, and for unlisted-only evidence', async () => {
+    const one = await go([...hard, '--dry-run'], { appServer: server('gpt-6.1-sol') });
+    expect(one.out).not.toContain('model: gpt-6.1-sol');
+    const none = await go([...hard, '--dry-run'], { appServer: server('gpt-other') });
+    expect(none.out).toContain('provider default kept: no comparable, sufficient evidence');
+    const easy = await go([...hard.slice(0, 4), 'rename a variable', ...hard.slice(5), '--dry-run'], { appServer: both });
+    expect(easy.out).toContain('an easy task does not call for a model chosen by benchmark leads');
+    expect(easy.out).not.toContain('model: gpt-6.1-sol');
+  });
+
+  it('keeps manual choices and never selects ultracode', async () => {
+    const manual = await go([...hard, '--dry-run', '--step-model', 'review=gpt-6.1-terra'], { appServer: both });
+    expect(manual.out).toContain('reason: requested with --step-model review=gpt-6.1-terra');
+    expect(manual.out).not.toContain('model: gpt-6.1-sol');
+    const live = await go([...hard, '--confirm'], { appServer: both });
+    for (const spec of live.specs) expect(spec.args.join(' ')).not.toContain('ultracode');
+  });
+
+  it('adds no research output without the option', async () => {
+    const plain = await go(hard.slice(0, 4).concat(['--dry-run']), { appServer: both });
+    expect(plain.out).not.toContain('evidence catalog');
+  });
+});

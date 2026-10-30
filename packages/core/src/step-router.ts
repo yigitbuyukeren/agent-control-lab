@@ -3,7 +3,7 @@ import { ladderLevel, wantedLevel, type PolicyName, type TaskSize } from './step
 import type { QuotaLevel } from './routing.ts';
 import type { SelectionStep } from './step-selection.ts';
 
-export const MODEL_ROUTINGS = ['auto', 'adaptive', 'measured'] as const;
+export const MODEL_ROUTINGS = ['auto', 'adaptive', 'measured', 'research'] as const;
 export type ModelRouting = (typeof MODEL_ROUTINGS)[number];
 
 export function isModelRouting(value: string): value is ModelRouting {

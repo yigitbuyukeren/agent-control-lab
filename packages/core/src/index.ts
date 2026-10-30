@@ -46,6 +46,8 @@ export * from './step-policy.ts';
 export * from './step-router.ts';
 export * from './outcome-record.ts';
 export * from './outcome-stats.ts';
+export * from './evidence-catalog.ts';
+export * from './evidence-router.ts';
 export * from './process-runner.ts';
 export * from './codex-run.ts';
 export * from './git-preflight.ts';

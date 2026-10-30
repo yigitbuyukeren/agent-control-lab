@@ -86,6 +86,12 @@ export function wantedLevel(input: Omit<PolicyInput, 'model'>): { wanted: number
   return { wanted, parts };
 }
 
+/** Position of an effort name on the ladder, or undefined when it cannot be ordered. */
+export function levelRank(name: string): number | undefined {
+  const at = LADDER.indexOf(name);
+  return at === -1 ? undefined : at;
+}
+
 /** Level name for a ladder index, or undefined when it is off the ladder. */
 export function ladderLevel(index: number): string | undefined {
   return LADDER[index];

@@ -4,6 +4,10 @@ import {
   chooseMeasured,
   classifyTask,
   decideEffort,
+  difficultyOf,
+  ladderLevel,
+  recommendFromEvidence,
+  wantedLevel,
   discoverCodexModels,
   estimateTaskSize,
   readAllQuotas,
@@ -78,7 +82,29 @@ export async function applyPolicy(
   for (const { step, provider } of selectionSteps(workflow)) {
     let current = requests[step];
     if (current === undefined) continue;
-    if (routing === 'measured') {
+    if (routing === 'research') {
+      if (current.modelFromFlag || current.effortFromFlag) {
+        current = {
+          ...current,
+          routing: {
+            note: current.modelFromFlag ? 'not applied: the model was set manually' : 'not applied: the effort was set manually; the model stays with the provider default',
+            evidence: [],
+            pinned: false,
+          },
+        };
+      } else {
+        const list = provider === 'codex' ? await codexCatalog() : undefined;
+        const available = provider === 'claude' ? claudeRegistry.map((m) => m.id) : list?.state === 'ok' ? list.models.map((m) => m.id) : [];
+        const target = ladderLevel(Math.max(0, wantedLevel({ policy, step, size, quota: 'unknown', ...(kind === 'sensitive' ? { sensitive: true } : {}) }).wanted));
+        const decision = recommendFromEvidence({ step, provider, difficulty: difficultyOf(size, kind), targetEffort: target, available, now: (deps.now ?? (() => new Date()))() });
+        const extra = provider === 'codex' && list?.state !== 'ok' ? ['codex model list: not available, so no Codex model can be shown to be accessible'] : [];
+        current = {
+          ...current,
+          request: decision.model === undefined ? current.request : { ...current.request, model: decision.model },
+          routing: { note: decision.note, evidence: [...extra, ...decision.evidence], pinned: decision.model !== undefined },
+        };
+      }
+    } else if (routing === 'measured') {
       if (current.modelFromFlag || current.effortFromFlag) {
         current = {
           ...current,
@@ -168,7 +194,7 @@ export async function applyPolicy(
       size,
       model: pinned ? { kind: 'pinned', id: current.request.model, capability } : { kind: 'auto' },
       quota,
-      ...(kind === 'sensitive' && routing === 'adaptive' ? { sensitive: true } : {}),
+      ...(kind === 'sensitive' && (routing === 'adaptive' || routing === 'research') ? { sensitive: true } : {}),
     });
     result[step] = {
       ...current,

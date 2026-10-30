@@ -5,6 +5,8 @@ export interface ClaudeQuotaStatus {
   readonly state: 'ok' | 'unknown';
   readonly fiveHour?: QuotaWindow;
   readonly sevenDay?: QuotaWindow;
+  /** ISO time the data was collected; only set when read from the local cache. */
+  readonly updatedAt?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

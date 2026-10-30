@@ -70,4 +70,27 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
     expect(out).toContain('7d window: 55% used');
     expect(out).not.toContain('secret');
   });
+
+  it('statusline-collect then quota claude work through the real binary with an isolated cache', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'acl-smoke-cache-'));
+    try {
+      const env = { ...process.env, ACL_CACHE_DIR: cache };
+      const now = Math.floor(Date.now() / 1000);
+      const input = JSON.stringify({
+        session_id: 'secret-session',
+        rate_limits: {
+          five_hour: { used_percentage: 33, resets_at: now + 3600 },
+          seven_day: { used_percentage: 44, resets_at: now + 86400 },
+        },
+      });
+      const collected = execFileSync(process.execPath, [bin, 'statusline-collect'], { input, env, encoding: 'utf8', timeout: 20000 });
+      expect(collected).toBe('');
+      const out = execFileSync(process.execPath, [bin, 'quota', 'claude'], { env, encoding: 'utf8', timeout: 20000 });
+      expect(out).toContain('5h window: 33% used');
+      expect(out).toContain('7d window: 44% used');
+      expect(out).not.toContain('secret');
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
+  });
 });

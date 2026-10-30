@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AppServerProcess, Exec } from '@agent-control-lab/core';
-import { run } from './main.ts';
+import { run, type Deps } from './main.ts';
 
 async function capture(argv: string[], exec?: Exec) {
   let out = '';
@@ -103,11 +106,71 @@ describe('cli', () => {
     expect(out).not.toMatch(/secret|home/);
   });
 
-  it('quota claude requires --stdin and reports invalid input as unknown', async () => {
-    expect((await capture(['quota', 'claude'])).code).toBe(2);
+  it('quota claude rejects unknown flags and reports invalid input as unknown', async () => {
+    expect((await capture(['quota', 'claude', '--bogus'])).code).toBe(2);
     expect((await capture(['quota', 'nope'])).code).toBe(2);
     let out = '';
     await run(['quota', 'claude', '--stdin'], { out: (t) => (out += t), error: () => undefined }, { readStdin: () => Promise.resolve('not json') });
     expect(out).toContain('Claude Code quota: unknown');
+  });
+
+  describe('statusline cache', () => {
+    const input = JSON.stringify({
+      session_id: 'secret-session',
+      rate_limits: {
+        five_hour: { used_percentage: 20, resets_at: 1800000000 },
+        seven_day: { used_percentage: 60, resets_at: 1800500000 },
+      },
+    });
+    const NOW = new Date('2027-01-15T00:00:00Z');
+
+    async function withDir(test: (dir: string) => Promise<void>) {
+      const dir = mkdtempSync(join(tmpdir(), 'acl-cli-'));
+      try {
+        await test(dir);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    async function exec(argv: string[], deps: Deps) {
+      let out = '';
+      let error = '';
+      const code = await run(argv, { out: (t) => (out += t), error: (t) => (error += t) }, deps);
+      return { code, out, error };
+    }
+
+    it('collects silently, then quota claude reads the cache', async () => {
+      await withDir(async (cacheDir) => {
+        const collect = await exec(['statusline-collect'], { cacheDir, now: () => NOW, readStdin: () => Promise.resolve(input) });
+        expect(collect).toEqual({ code: 0, out: '', error: '' });
+        const shown = await exec(['quota', 'claude'], { cacheDir, now: () => new Date(NOW.getTime() + 60_000) });
+        expect(shown.out).toContain('5h window: 20% used');
+        expect(shown.out).toContain('7d window: 60% used');
+        expect(shown.out).toContain('updated 2027-01-15T00:00:00.000Z');
+        expect(shown.out).not.toContain('secret');
+      });
+    });
+
+    it('shows unknown for stale or missing cache and keeps bad input from overwriting', async () => {
+      await withDir(async (cacheDir) => {
+        expect((await exec(['quota', 'claude'], { cacheDir, now: () => NOW })).out).toContain('Claude Code quota: unknown');
+        await exec(['statusline-collect'], { cacheDir, now: () => NOW, readStdin: () => Promise.resolve(input) });
+        await exec(['statusline-collect'], { cacheDir, now: () => NOW, readStdin: () => Promise.resolve('garbage') });
+        const stale = await exec(['quota', 'claude'], { cacheDir, now: () => new Date(NOW.getTime() + 3_600_000) });
+        expect(stale.out).toContain('Claude Code quota: unknown');
+        const fresh = await exec(['quota', 'claude'], { cacheDir, now: () => NOW });
+        expect(fresh.out).toContain('5h window: 20% used');
+      });
+    });
+
+    it('reports a fixed error when the cache cannot be written', async () => {
+      await withDir(async (cacheDir) => {
+        const blocker = join(cacheDir, 'file');
+        writeFileSync(blocker, 'x');
+        const r = await exec(['statusline-collect'], { cacheDir: blocker, now: () => NOW, readStdin: () => Promise.resolve(input) });
+        expect(r).toEqual({ code: 1, out: '', error: 'could not write the quota cache\n' });
+      });
+    });
   });
 });

@@ -6,7 +6,10 @@ import {
   getInfo,
   parseClaudeStatusLine,
   parseCommand,
+  readClaudeCache,
   readCodexQuota,
+  resolveCacheDir,
+  writeClaudeCache,
   type AppServerSpawn,
   type AuthStatus,
   type ClaudeQuotaStatus,
@@ -27,7 +30,9 @@ Commands:
   info      Print runtime information
   providers Show installed AI CLI providers (local --version check only)
   quota     Show Codex rate-limit usage (read-only app-server query)
+  quota claude          Show Claude Code limits from the local statusLine cache
   quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
+  statusline-collect    Store 5h/7d limits from statusLine JSON on stdin (opt-in, see docs/STATUSLINE.md)
   auth-status Show provider login state and method (local status commands only)
 `;
 
@@ -40,6 +45,8 @@ export interface Deps {
   readonly exec?: Exec;
   readonly appServer?: AppServerSpawn;
   readonly readStdin?: () => Promise<string>;
+  readonly cacheDir?: string;
+  readonly now?: () => Date;
 }
 
 function formatProvider(s: ProviderStatus): string {
@@ -123,7 +130,8 @@ function formatClaudeLine(label: string, window: QuotaWindow | undefined): strin
 }
 
 function formatClaudeQuota(q: ClaudeQuotaStatus): string {
-  return `Claude Code quota: ${q.state === 'ok' ? 'ok' : 'unknown'}\n${formatClaudeLine('5h window', q.fiveHour)}${formatClaudeLine('7d window', q.sevenDay)}`;
+  const updated = q.updatedAt === undefined ? '' : `  updated ${q.updatedAt}\n`;
+  return `Claude Code quota: ${q.state === 'ok' ? 'ok' : 'unknown'}\n${formatClaudeLine('5h window', q.fiveHour)}${formatClaudeLine('7d window', q.sevenDay)}${updated}`;
 }
 
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
@@ -152,8 +160,15 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
     case 'quota': {
       const [, target, flag] = argv;
       if (target === 'claude') {
+        if (flag === undefined) {
+          const dir = deps.cacheDir ?? resolveCacheDir();
+          const cached =
+            dir === undefined ? { state: 'unknown' as const } : await readClaudeCache(dir, (deps.now ?? (() => new Date()))());
+          io.out(formatClaudeQuota(cached));
+          return 0;
+        }
         if (flag !== '--stdin') {
-          io.error('usage: agent-control-lab quota claude --stdin\n');
+          io.error('usage: agent-control-lab quota claude [--stdin]\n');
           return 2;
         }
         const text = await (deps.readStdin ?? readProcessStdin)();
@@ -166,6 +181,19 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       }
       const quota = await readCodexQuota(deps.appServer);
       io.out(formatQuota(quota));
+      return 0;
+    }
+    case 'statusline-collect': {
+      // Silent on stdout: the statusLine command's output would otherwise become the status text.
+      const status = parseClaudeStatusLine(await (deps.readStdin ?? readProcessStdin)());
+      const dir = deps.cacheDir ?? resolveCacheDir();
+      if (status.state !== 'ok' || dir === undefined) return 0;
+      try {
+        await writeClaudeCache(dir, status, (deps.now ?? (() => new Date()))());
+      } catch {
+        io.error('could not write the quota cache\n');
+        return 1;
+      }
       return 0;
     }
     case 'info':

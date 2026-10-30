@@ -115,4 +115,21 @@ describe('providers smoke (fake CLI shims on PATH)', () => {
       rmSync(cache, { recursive: true, force: true });
     }
   });
+
+  it('route --dry-run asks for manual selection when no provider is on PATH', () => {
+    const cache = mkdtempSync(join(tmpdir(), 'acl-smoke-route-'));
+    try {
+      const env: Record<string, string> = {};
+      for (const [key, value] of Object.entries(process.env)) {
+        if (value !== undefined && key.toLowerCase() !== 'path') env[key] = value;
+      }
+      env['PATH'] = join(cache, 'no-binaries-here');
+      env['ACL_CACHE_DIR'] = cache;
+      const out = execFileSync(process.execPath, [bin, 'route', '--dry-run', '--task', 'review'], { env, encoding: 'utf8', timeout: 20000 });
+      expect(out).toContain('manual-selection-required');
+      expect(out).toContain('reason: no-available-provider');
+    } finally {
+      rmSync(cache, { recursive: true, force: true });
+    }
+  });
 });

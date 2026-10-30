@@ -114,6 +114,80 @@ describe('cli', () => {
     expect(out).toContain('Claude Code quota: unknown');
   });
 
+  describe('route --dry-run', () => {
+    const NOW = new Date('2027-01-15T00:00:00Z');
+    const exec: Exec = (command, args) => {
+      if (args[0] === 'auth' || args[0] === 'login') {
+        return Promise.resolve(
+          command === 'claude'
+            ? { kind: 'ok', stdout: '{"loggedIn":true,"authMethod":"claude.ai"}' }
+            : { kind: 'ok', stdout: 'Logged in using ChatGPT' },
+        );
+      }
+      return Promise.resolve({ kind: 'not-found' });
+    };
+    const appServer = (usedPercent: number) => (): AppServerProcess => {
+      let lineCb: (line: string) => void = () => undefined;
+      return {
+        send: (line) => {
+          const m = JSON.parse(line) as { id?: number };
+          if (m.id === 1) queueMicrotask(() => { lineCb('{"id":1,"result":{}}'); });
+          if (m.id === 2) {
+            const result = { rateLimits: { primary: { usedPercent, windowDurationMins: 300 }, secondary: { usedPercent, windowDurationMins: 10080 } } };
+            queueMicrotask(() => { lineCb(JSON.stringify({ id: 2, result })); });
+          }
+        },
+        onLine: (cb) => (lineCb = cb),
+        onExit: () => undefined,
+        kill: () => Promise.resolve(),
+      };
+    };
+    const route = async (argv: string[], percent: number) => {
+      const cacheDir = mkdtempSync(join(tmpdir(), 'acl-route-'));
+      try {
+        let out = '';
+        let error = '';
+        const code = await run(argv, { out: (t) => (out += t), error: (t) => (error += t) }, { exec, cacheDir, now: () => NOW, appServer: appServer(percent) });
+        return { code, out, error };
+      } finally {
+        rmSync(cacheDir, { recursive: true, force: true });
+      }
+    };
+
+    it('recommends by task affinity and flags unknown Claude quota', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'review'], 20);
+      expect(r.code).toBe(0);
+      expect(r.out).toContain('recommended: codex');
+      expect(r.out).toContain('reason: task-affinity');
+    });
+
+    it('asks for manual selection when the preferred provider is exhausted', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'review', '--prefer', 'codex'], 99);
+      expect(r.out).toContain('manual-selection-required');
+      expect(r.out).toContain('reason: preferred-quota-exhausted');
+    });
+
+    it('falls to the other provider when one is exhausted in auto mode', async () => {
+      const r = await route(['route', '--dry-run', '--task', 'review'], 99);
+      expect(r.out).toContain('recommended: claude');
+      expect(r.out).toContain('caveat: quota-unknown (claude)');
+    });
+
+    it('requires --dry-run and a valid task and preference', async () => {
+      for (const argv of [
+        ['route', '--task', 'review'],
+        ['route', '--dry-run'],
+        ['route', '--dry-run', '--task', 'nope'],
+        ['route', '--dry-run', '--task', 'review', '--prefer', 'x'],
+        ['route', '--dry-run', '--task', 'review', '--run'],
+      ]) {
+        const r = await route(argv, 0);
+        expect(r.code).toBe(2);
+        expect(r.out).toBe('');
+      }
+    });
+  });
+
   describe('quota all', () => {
     const NOW = new Date('2027-01-15T00:00:00Z');
     const codexServer = (): AppServerProcess => {

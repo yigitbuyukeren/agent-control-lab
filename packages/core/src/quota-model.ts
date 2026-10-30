@@ -74,7 +74,10 @@ export function fromCodexQuota(status: QuotaStatus, now: Date): ProviderQuota {
   if (status.state === 'error') {
     return { ...base, state: 'error', freshness: 'unknown', windows: [], error: status.error ?? 'unknown' };
   }
-  const hasData = status.primary !== undefined || status.secondary !== undefined;
+  // Windows present but carrying no usable value (e.g. `{}`) are not data.
+  const hasData = [status.primary, status.secondary].some(
+    (window) => window?.usedPercent !== undefined || window?.resetsAt !== undefined,
+  );
   return {
     ...base,
     state: hasData ? 'ok' : 'unknown',

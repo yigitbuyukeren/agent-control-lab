@@ -6,7 +6,11 @@ import {
   getInfo,
   parseClaudeStatusLine,
   parseCommand,
+  ROUTE_PROVIDERS,
+  TASK_KINDS,
+  availabilityFromAuth,
   readAllQuotas,
+  routeTask,
   readClaudeCache,
   readCodexQuota,
   resolveCacheDir,
@@ -14,7 +18,10 @@ import {
   type AppServerSpawn,
   type AuthStatus,
   type ClaudeQuotaStatus,
+  type ProviderPreference,
   type ProviderQuota,
+  type RouteDecision,
+  type TaskKind,
   type UsageWindow,
   type Exec,
   type ProviderStatus,
@@ -36,6 +43,8 @@ Commands:
   quota all             Show Claude (local cache) and Codex (app-server) limits together
   quota claude          Show Claude Code limits from the local statusLine cache
   quota claude --stdin  Show Claude Code limits from statusLine JSON on stdin
+  route --dry-run --task <kind> [--prefer claude|codex|auto]
+                        Recommend a provider (no agent is started)
   statusline-collect    Store 5h/7d limits from statusLine JSON on stdin (opt-in, see docs/STATUSLINE.md)
   auth-status Show provider login state and method (local status commands only)
 `;
@@ -156,6 +165,50 @@ function formatProviderQuota(q: ProviderQuota): string {
   return `${q.displayName}: ${q.state} (${notes.join(', ')})\n${q.windows.map(formatUsageWindow).join('')}`;
 }
 
+interface RouteArgs {
+  readonly task: TaskKind;
+  readonly preference: ProviderPreference;
+}
+
+function parseRouteArgs(args: readonly string[]): RouteArgs | string {
+  let task: TaskKind | undefined;
+  let preference: ProviderPreference = 'auto';
+  let dryRun = false;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--dry-run') {
+      dryRun = true;
+    } else if (arg === '--task') {
+      const value = args[(i += 1)];
+      const kind = TASK_KINDS.find((k) => k === value);
+      if (kind === undefined) return `--task must be one of: ${TASK_KINDS.join(', ')}`;
+      task = kind;
+    } else if (arg === '--prefer') {
+      const value = args[(i += 1)];
+      const choice = [...ROUTE_PROVIDERS, 'auto' as const].find((p) => p === value);
+      if (choice === undefined) return '--prefer must be one of: claude, codex, auto';
+      preference = choice;
+    } else {
+      return `unknown route option: ${arg ?? ''}`;
+    }
+  }
+  if (!dryRun) return 'route only supports --dry-run; nothing is executed';
+  if (task === undefined) return `--task is required (${TASK_KINDS.join(', ')})`;
+  return { task, preference };
+}
+
+function formatRoute(args: RouteArgs, decision: RouteDecision): string {
+  const head = `route (dry run): task=${args.task} prefer=${args.preference}\n`;
+  if (decision.kind === 'manual-selection-required') {
+    return `${head}manual-selection-required\n${decision.reasons.map((r) => `  reason: ${r}\n`).join('')}`;
+  }
+  return (
+    `${head}recommended: ${decision.provider}\n` +
+    decision.reasons.map((r) => `  reason: ${r}\n`).join('') +
+    decision.caveats.map((c) => `  caveat: ${c.code} (${c.provider})\n`).join('')
+  );
+}
+
 export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Promise<number> {
   const parsed = parseCommand(argv);
   if (!parsed.ok) {
@@ -225,6 +278,29 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         io.error('could not write the quota cache\n');
         return 1;
       }
+      return 0;
+    }
+    case 'route': {
+      const args = parseRouteArgs(argv.slice(1));
+      if (typeof args === 'string') {
+        io.error(`${args}\n`);
+        return 2;
+      }
+      const [auth, quotas] = await Promise.all([
+        detectAuthStatuses(builtinAdapters, deps.exec ?? defaultExec),
+        readAllQuotas({
+          claudeCacheDir: deps.cacheDir ?? resolveCacheDir(),
+          ...(deps.appServer === undefined ? {} : { appServer: deps.appServer }),
+          ...(deps.now === undefined ? {} : { now: deps.now }),
+        }),
+      ]);
+      const decision = routeTask({
+        task: args.task,
+        preference: args.preference,
+        availability: availabilityFromAuth(auth),
+        quota: Object.fromEntries(quotas.map((q) => [q.provider, q])),
+      });
+      io.out(formatRoute(args, decision));
       return 0;
     }
     case 'info':

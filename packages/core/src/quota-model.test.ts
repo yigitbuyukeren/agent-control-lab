@@ -67,6 +67,19 @@ describe('fromCodexQuota', () => {
     expect(quota.windows[1]).toEqual({ id: 'secondary', label: 'secondary' });
   });
 
+  it('does not report empty windows as ok/live', () => {
+    for (const status of [
+      { state: 'ok' as const, primary: {}, secondary: {} },
+      { state: 'ok' as const, plan: 'pro', primary: { windowMinutes: 300 } },
+    ]) {
+      const quota = fromCodexQuota(status, NOW);
+      expect(quota).toMatchObject({ state: 'unknown', freshness: 'unknown' });
+      expect(quota.updatedAt).toBeUndefined();
+      expect(quota.windows.every((w) => w.usedPercent === undefined)).toBe(true);
+    }
+    expect(fromCodexQuota({ state: 'ok', primary: { resetsAt: '2027-01-15T04:00:00.000Z' } }, NOW).state).toBe('ok');
+  });
+
   it('maps empty, not-installed and error without inventing numbers', () => {
     expect(fromCodexQuota({ state: 'ok' }, NOW)).toMatchObject({ state: 'unknown', freshness: 'unknown' });
     expect(fromCodexQuota({ state: 'not-installed' }, NOW)).toMatchObject({ state: 'not-installed', windows: [] });

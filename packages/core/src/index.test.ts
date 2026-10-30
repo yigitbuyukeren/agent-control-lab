@@ -10,6 +10,7 @@ describe('parseCommand', () => {
     expect(parseCommand(['info'])).toEqual({ ok: true, value: 'info' });
     expect(parseCommand(['auth-status'])).toEqual({ ok: true, value: 'auth-status' });
     expect(parseCommand(['statusline-collect'])).toEqual({ ok: true, value: 'statusline-collect' });
+    expect(parseCommand(['route'])).toEqual({ ok: true, value: 'route' });
     expect(parseCommand(['quota'])).toEqual({ ok: true, value: 'quota' });
     expect(parseCommand(['providers'])).toEqual({ ok: true, value: 'providers' });
   });

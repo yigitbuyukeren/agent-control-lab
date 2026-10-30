@@ -1,26 +1,48 @@
-import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { MAX_STORED_RECORDS, parseOutcomeLine, serializeOutcome, type OutcomeRecord, type OutcomeStore } from '@agent-control-lab/core';
 
 export const OUTCOME_FILE = 'outcomes.jsonl';
-const LOCK_DIR = 'outcomes.lock';
+export const LOCK_DIR = 'outcomes.lock';
+const OWNER_FILE = 'owner';
 const MAX_FILE_BYTES = 1024 * 1024;
-/** A lock older than this belongs to a process that died; the critical section takes milliseconds. */
-const STALE_LOCK_MS = 15_000;
-const LOCK_WAIT_MS = 10_000;
+const DEFAULT_LOCK_WAIT_MS = 10_000;
 /** Errors that mean "somebody else holds it right now" (Windows reports some of them as EPERM/EACCES/EBUSY). */
 const CONTENDED = new Set(['EEXIST', 'EPERM', 'EACCES', 'EBUSY']);
 
 const codeOf = (error: unknown): string | undefined => (typeof error === 'object' && error !== null ? (error as { code?: string }).code : undefined);
 
 /**
- * Cross-process mutual exclusion with a lock directory: `mkdir` either creates it or fails atomically on every
- * platform and file system we run on. A lock left by a crashed process is moved aside once it is stale. Waiting is
- * bounded; on timeout the caller gets an error and nothing is written (a run never hangs on its records).
+ * The store could not be locked within the wait. Nothing was written. The holder may be a live run that is
+ * slow or paused, or a run that crashed and left the lock behind: telling those apart needs a liveness proof
+ * that does not exist across platforms (a lock's age proves nothing, a process id can be reused), so the lock is
+ * never taken over automatically. See docs/ORCHESTRATE.md for the manual recovery.
  */
-async function withLock<T>(dir: string, work: () => Promise<T>): Promise<T> {
+export class OutcomeStoreLockedError extends Error {
+  readonly lockPath: string;
+  constructor(lockPath: string) {
+    super(`the outcome store is locked (${lockPath})`);
+    this.name = 'OutcomeStoreLockedError';
+    this.lockPath = lockPath;
+  }
+}
+
+export interface OutcomeStoreOptions {
+  /** How long a change waits for the lock before failing closed. */
+  readonly waitMs?: number;
+  /** Test seam: runs while the lock is held, before the file is changed. */
+  readonly whileLocked?: () => Promise<void>;
+}
+
+/**
+ * Cross-process mutual exclusion with a lock directory: `mkdir` either creates it or fails atomically on every
+ * platform and file system we run on. The holder writes a random token into it and, on release, removes the lock
+ * only if that token is still its own. A waiter that times out fails closed; it never removes or replaces a lock it
+ * did not create, so two live processes cannot both be inside the critical section.
+ */
+async function withLock<T>(dir: string, waitMs: number, work: () => Promise<T>): Promise<T> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   const lock = join(dir, LOCK_DIR);
   const started = Date.now();
@@ -31,24 +53,22 @@ async function withLock<T>(dir: string, work: () => Promise<T>): Promise<T> {
     } catch (error) {
       const code = codeOf(error);
       if (code === undefined || !CONTENDED.has(code)) throw error;
-      try {
-        if (Date.now() - (await stat(lock)).mtimeMs > STALE_LOCK_MS) {
-          const aside = `${lock}.stale-${randomBytes(6).toString('hex')}`;
-          await rename(lock, aside).catch(() => undefined);
-          await rm(aside, { recursive: true, force: true }).catch(() => undefined);
-          continue;
-        }
-      } catch {
-        continue; // released between the failed mkdir and the stat: try again at once
-      }
-      if (Date.now() - started > LOCK_WAIT_MS) throw new Error('outcome store is locked by another process');
+      if (Date.now() - started > waitMs) throw new OutcomeStoreLockedError(lock);
       await delay(10 + Math.floor(Math.random() * 40));
     }
+  }
+  const token = randomBytes(12).toString('hex');
+  try {
+    await writeFile(join(lock, OWNER_FILE), JSON.stringify({ pid: process.pid, token }), { mode: 0o600 });
+  } catch (error) {
+    await rm(lock, { recursive: true, force: true }).catch(() => undefined);
+    throw error;
   }
   try {
     return await work();
   } finally {
-    await rm(lock, { recursive: true, force: true }).catch(() => undefined);
+    const owner = await readFile(join(lock, OWNER_FILE), 'utf8').catch(() => '');
+    if (owner.includes(`"token":"${token}"`)) await rm(lock, { recursive: true, force: true }).catch(() => undefined);
   }
 }
 
@@ -69,10 +89,12 @@ async function renameWithRetry(from: string, to: string): Promise<void> {
 /**
  * Records in one JSON-lines file inside the per-user cache directory (owner-only where the platform supports it).
  * Every change runs under a cross-process lock and replaces the file atomically (unique temp file, then rename), so
- * concurrent runs cannot lose each other's records and a crash never leaves a half-written file. Reads take no lock
+ * concurrent runs cannot lose each other's records and a crash never leaves a half-written file. If the lock cannot
+ * be had in time the change is not made (`OutcomeStoreLockedError`). Reads take no lock
  * (the file is always complete), are strict (malformed lines are skipped) and bounded; the newest records are kept.
  */
-export function fileOutcomeStore(dir: string): OutcomeStore {
+export function fileOutcomeStore(dir: string, options: OutcomeStoreOptions = {}): OutcomeStore {
+  const waitMs = options.waitMs ?? DEFAULT_LOCK_WAIT_MS;
   const file = join(dir, OUTCOME_FILE);
   const load = async (): Promise<OutcomeRecord[]> => {
     let text: string;
@@ -91,7 +113,8 @@ export function fileOutcomeStore(dir: string): OutcomeStore {
     load,
     append: async (records) => {
       if (records.length === 0) return;
-      await withLock(dir, async () => {
+      await withLock(dir, waitMs, async () => {
+        await options.whileLocked?.();
         const kept = [...(await load()), ...records].slice(-MAX_STORED_RECORDS);
         const tmp = join(dir, `${OUTCOME_FILE}.${String(process.pid)}.${randomBytes(6).toString('hex')}.tmp`);
         try {
@@ -104,7 +127,7 @@ export function fileOutcomeStore(dir: string): OutcomeStore {
       });
     },
     clear: () =>
-      withLock(dir, async () => {
+      withLock(dir, waitMs, async () => {
         await rm(file, { force: true });
       }),
   };

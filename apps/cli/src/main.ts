@@ -670,7 +670,12 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       }
       const sub = argv[1];
       if (sub === 'clear' && argv.length === 2) {
-        await deps.outcomes.clear();
+        try {
+          await deps.outcomes.clear();
+        } catch {
+          io.error('outcomes: the store is locked or not writable; nothing was deleted (see docs/ORCHESTRATE.md)\n');
+          return 1;
+        }
         io.out('outcomes: all local records deleted\n');
         return 0;
       }

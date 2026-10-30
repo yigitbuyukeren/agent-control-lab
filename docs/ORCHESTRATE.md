@@ -218,10 +218,21 @@ directory (`ACL_CACHE_DIR` overrides it), owner-only where the platform allows i
 
 - **Concurrent runs:** every change to `outcomes.jsonl` takes a lock directory (`outcomes.lock`, created with `mkdir`,
   atomic on Windows, macOS and Linux), re-reads the file inside the lock, and replaces it through a unique temp file
-  and a rename, so parallel runs lose no record and a crash never leaves a half-written file. A lock older than 15 s
-  (a dead process) is taken over; waiting is bounded to 10 s, after which the run reports "could not be recorded
-  locally" and carries on. Readers take no lock. A lock taken over at the very moment its owner wakes up is the one
-  case this does not cover.
+  and a rename, so parallel runs lose no record and a crash never leaves a half-written file. The holder writes a
+  random token into the lock and removes the lock on release only if the token is still its own.
+- **No automatic takeover:** a lock's age does not show that its owner died (a run can be slow or paused), and a
+  process id can be reused, so a waiter never removes or replaces a lock it did not create. It waits up to 10 s and
+  then **fails closed**: nothing is written, the run itself is unaffected, and it prints `outcomes: not recorded, the
+  store is locked (<path>) ...`. `outcomes clear` reports the same and deletes nothing.
+- **Manual recovery** (only after a run crashed or was killed, which is the one way a lock stays behind):
+  1. Make sure no `agent-control-lab` run is active (Task Manager on Windows, `ps` elsewhere); a slow run releases
+     the lock itself.
+  2. Delete the lock directory named in the message: `outcomes.lock` inside the cache directory
+     (`ACL_CACHE_DIR`, else `~/.cache/agent-control-lab` on Linux, `~/Library/Caches/agent-control-lab` on macOS,
+     `%LOCALAPPDATA%\agent-control-lab` on Windows; the exact path is in the message). Its `owner` file holds the
+     holder's process id if you want to check it.
+  3. The records are intact: the data file is only ever replaced by a complete one. Leftover
+     `outcomes.jsonl.*.tmp` files are harmless and can be deleted.
 - **Comparable data only:** records are grouped by provider, step, task type and size. Without a test group the tasks
   behind two models' records are unknown, so a non-default model is chosen only if every compared group covers
   3+ days and the groups were measured in overlapping periods. Otherwise the default stays and the dry run says "not

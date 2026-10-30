@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { MAX_STORED_RECORDS, type OutcomeRecord } from '@agent-control-lab/core';
-import { fileOutcomeStore, OUTCOME_FILE } from './outcome-store.ts';
+import { fileOutcomeStore, LOCK_DIR, OUTCOME_FILE, OutcomeStoreLockedError } from './outcome-store.ts';
 import { formatOutcomes } from './format.ts';
 import { run } from './main.ts';
 
@@ -62,14 +62,78 @@ describe('concurrent writers', () => {
     expect(readdirSync(dir)).toEqual([OUTCOME_FILE]);
   }, 60_000);
 
-  it('takes over a lock left by a dead process, and gives up (without writing) on a fresh one', async () => {
-    const lock = join(dir, 'outcomes.lock');
+  it('never takes over a lock by age: an old lock from a crashed run fails closed, keeps its data, and manual removal recovers', async () => {
+    const store = fileOutcomeStore(dir, { waitMs: 150 });
+    await store.append([rec({ seconds: 1 })]);
+    const lock = join(dir, LOCK_DIR);
     mkdirSync(lock);
-    const old = new Date(Date.now() - 60_000);
+    writeFileSync(join(lock, 'owner'), JSON.stringify({ pid: 2_000_000_000, token: 'dead' }));
+    const old = new Date(Date.now() - 3_600_000);
     utimesSync(lock, old, old);
-    await fileOutcomeStore(dir).append([rec()]);
-    expect(await fileOutcomeStore(dir).load()).toHaveLength(1);
+    await expect(store.append([rec({ seconds: 2 })])).rejects.toBeInstanceOf(OutcomeStoreLockedError);
+    await expect(store.clear()).rejects.toBeInstanceOf(OutcomeStoreLockedError);
+    expect(existsSync(lock)).toBe(true);
+    expect((await store.load()).map((r) => r.seconds)).toEqual([1]);
+    rmSync(lock, { recursive: true });
+    await store.append([rec({ seconds: 2 })]);
+    expect((await store.load()).map((r) => r.seconds)).toEqual([1, 2]);
+  });
+
+  it('leaves half-written temp files from a crash harmless', async () => {
+    writeFileSync(join(dir, `${OUTCOME_FILE}.999.abc.tmp`), '{"v":1,"day":"2026-10');
+    const store = fileOutcomeStore(dir);
+    await store.append([rec()]);
+    expect(await store.load()).toEqual([rec()]);
+  });
+
+  it('a paused holder keeps its lock: waiters fail closed, nobody deletes it, and the holder loses nothing', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered: () => void = () => undefined;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const holder = fileOutcomeStore(dir, { whileLocked: () => { entered(); return gate; } });
+    const held = holder.append([rec({ seconds: 11 })]);
+    await inside;
+    const lock = join(dir, LOCK_DIR);
+    for (const other of [fileOutcomeStore(dir, { waitMs: 100 }), fileOutcomeStore(dir, { waitMs: 100 })]) {
+      await expect(other.append([rec({ seconds: 22 })])).rejects.toBeInstanceOf(OutcomeStoreLockedError);
+    }
+    expect(existsSync(lock)).toBe(true);
+    release();
+    await held;
     expect(existsSync(lock)).toBe(false);
+    await fileOutcomeStore(dir).append([rec({ seconds: 33 })]);
+    expect((await fileOutcomeStore(dir).load()).map((r) => r.seconds)).toEqual([11, 33]);
+  });
+
+  it('a waiter gets in as soon as a slow but live holder finishes', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered: () => void = () => undefined;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const held = fileOutcomeStore(dir, { whileLocked: () => { entered(); return gate; } }).append([rec({ seconds: 1 })]);
+    await inside;
+    const waiting = fileOutcomeStore(dir, { waitMs: 5_000 }).append([rec({ seconds: 2 })]);
+    setTimeout(release, 150);
+    await Promise.all([held, waiting]);
+    expect((await fileOutcomeStore(dir).load()).map((r) => r.seconds).sort()).toEqual([1, 2]);
+  });
+
+  it('release removes only its own lock: a lock somebody else created meanwhile survives', async () => {
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered: () => void = () => undefined;
+    const inside = new Promise<void>((resolve) => { entered = resolve; });
+    const held = fileOutcomeStore(dir, { whileLocked: () => { entered(); return gate; } }).append([rec()]);
+    await inside;
+    const lock = join(dir, LOCK_DIR);
+    rmSync(lock, { recursive: true });
+    mkdirSync(lock);
+    writeFileSync(join(lock, 'owner'), JSON.stringify({ pid: process.pid, token: 'someone-else' }));
+    release();
+    await held;
+    expect(existsSync(lock)).toBe(true);
+    expect(readFileSync(join(lock, 'owner'), 'utf8')).toContain('someone-else');
   });
 
   it('never leaves a partial file: a failed write keeps the old content', async () => {
@@ -102,6 +166,18 @@ describe('outcomes command', () => {
     expect(await fileOutcomeStore(dir).load()).toEqual([]);
     expect((await call(['outcomes', 'x'])).code).toBe(2);
     expect((await call(['outcomes'], false)).code).toBe(1);
+  });
+
+  it('reports a locked store on clear instead of crashing, and deletes nothing', async () => {
+    await fileOutcomeStore(dir).append([rec()]);
+    mkdirSync(join(dir, LOCK_DIR));
+    let out = '';
+    let error = '';
+    const code = await run(['outcomes', 'clear'], { out: (t) => (out += t), error: (t) => (error += t) }, { outcomes: fileOutcomeStore(dir, { waitMs: 50 }) });
+    expect(code).toBe(1);
+    expect(error).toContain('nothing was deleted');
+    expect(out).toBe('');
+    expect(await fileOutcomeStore(dir).load()).toHaveLength(1);
   });
 
   it('formats an empty list', () => {

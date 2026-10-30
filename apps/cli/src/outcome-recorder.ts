@@ -9,6 +9,7 @@ import {
   type WorkflowName,
   type WorkflowResult,
 } from '@agent-control-lab/core';
+import { OutcomeStoreLockedError } from './outcome-store.ts';
 
 /**
  * Stores what a finished real run objectively showed (see `OutcomeRecord`). Never throws: a store problem is
@@ -36,8 +37,10 @@ export async function recordRun(
   if (records.length === 0) return '';
   try {
     await store.append(records);
-  } catch {
-    return 'outcomes: could not be recorded locally\n';
+  } catch (error) {
+    return error instanceof OutcomeStoreLockedError
+      ? `outcomes: not recorded, the store is locked (another run may be writing, or a crashed run left ${error.lockPath}); nothing was changed, see docs/ORCHESTRATE.md to recover\n`
+      : 'outcomes: could not be recorded locally\n';
   }
   return `outcomes: ${String(records.length)} step result(s) recorded locally (no task text, output, paths or session ids; \`outcomes clear\` deletes them, --no-record skips)\n`;
 }

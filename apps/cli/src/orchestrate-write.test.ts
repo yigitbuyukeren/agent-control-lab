@@ -9,6 +9,7 @@ import { parseOrchestrateArgs } from './orchestrate.ts';
 
 const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
 import { asClaude } from './claude-json-fixture.ts';
+import { OutcomeStoreLockedError } from './outcome-store.ts';
 const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
 
 const exec: Exec = (command, args) => {
@@ -573,6 +574,15 @@ describe('plan-implement-review: outcome records and --model-routing measured', 
     const r = await go([...WRITE(), '--model-routing', 'measured'], { onCodex: editFile(), outcomes: broken });
     expect(r.code).toBe(0);
     expect(r.error).toContain('could not be recorded locally');
+  });
+
+  it('reports a locked store as not recorded, with the way to recover, and does not fail the run', async () => {
+    const locked: OutcomeStore = { load: () => Promise.resolve([]), append: () => Promise.reject(new OutcomeStoreLockedError('/cache/outcomes.lock')), clear: () => Promise.resolve() };
+    const r = await go([...WRITE()], { onCodex: editFile(), outcomes: locked });
+    expect(r.code).toBe(0);
+    expect(r.error).toContain('not recorded, the store is locked');
+    expect(r.error).toContain('/cache/outcomes.lock');
+    expect(r.error).toContain('docs/ORCHESTRATE.md');
   });
 
   it('keeps the provider default and shows the data amount when there is not enough data', async () => {

@@ -13,7 +13,8 @@ import {
   type GitReadDeps,
   type PrepareResult,
 } from '@agent-control-lab/core';
-import { formatResult, formatStep, type OrchestrateArgs, type OrchestrateDeps, type OrchestrateIo } from './orchestrate.ts';
+import { applyPolicy } from './policy.ts';
+import { formatResult, formatStep, policyLine, type OrchestrateArgs, type OrchestrateDeps, type OrchestrateIo } from './orchestrate.ts';
 import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
 
 /** Fixed explanations for why a workspace was rejected; nothing here comes from git output. */
@@ -51,7 +52,8 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   const prep = await prepareWorkspace(cwd, gitDeps, { allowPartialIgnored: args.allowPartialIgnored === true });
   // The write target must be the worktree root itself, not a folder inside it.
   const atRoot = prep.ok ? relative(prep.before.root, cwd) === '' : prep.reason === 'workspace-rejected' && relative(prep.snapshot.root, cwd) === '';
-  const pfs = await preflightSteps(args.workflow, args.steps, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, deps);
+  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps);
+  const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, implementPf, reviewPf] = pfs;
   if (planPf === undefined || implementPf?.codex === undefined || reviewPf === undefined) throw new Error('plan-implement-review needs plan, implement and review steps');
   const ready = prep.ok && atRoot && pfs.every(stepOk);
@@ -70,6 +72,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         `  workspace check: ${atRoot || !prep.ok ? workspaceVerdict(prep) : 'rejected: the workspace must be the worktree root'}\n` +
         (prep.ok || prep.reason === 'git-state-unreadable' ? '' : prep.problems.map((p) => `      ${WORKSPACE_PROBLEMS[p] ?? p}\n`).join('')) +
         `  timeout: ${String(args.timeoutMs / 1000)}s per step\n  task: ${String(args.task.length)} characters\n` +
+        policyLine(args.policy, chosen.quotaNote) +
         `  ${n(1)} plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
         selectionLines(planPf) +
         stepDetails(planPf) +

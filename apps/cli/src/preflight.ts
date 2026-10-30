@@ -34,6 +34,8 @@ export interface PreflightDeps {
   readonly appServer?: AppServerSpawn;
   readonly git?: (cwd: string) => Promise<GitState>;
   readonly claudeSettings?: (cwd: string) => Promise<SettingsScan>;
+  /** Reuses an already-read Codex model catalog instead of asking the app-server again. */
+  readonly codexModels?: () => Promise<CodexModelsResult>;
   /** Caller environment; defaults to `process.env`. */
   readonly env?: Readonly<Record<string, string | undefined>>;
 }
@@ -100,7 +102,7 @@ export async function codexPreflight(input: PreflightInput, deps: PreflightDeps)
   const git = await (deps.git ?? ((dir: string) => checkGitRepo(dir)))(input.cwd);
   const auth = await detectAuth(codexAdapter, deps.exec ?? defaultExec);
   const pinned = input.request.model !== 'auto' || input.request.effort !== 'auto';
-  const codex: CodexModelsResult = pinned ? await discoverCodexModels(deps.appServer) : { state: 'ok', models: [] };
+  const codex: CodexModelsResult = pinned ? await (deps.codexModels?.() ?? discoverCodexModels(deps.appServer)) : { state: 'ok', models: [] };
   const selection = resolveSelection('codex', input.request, { claude: claudeRegistry, codex });
   const plan = planCodexRun({ task: input.task, auth, selection, git, acceptUnverified: input.acceptUnverified });
   return { plan, auth, git, selection };

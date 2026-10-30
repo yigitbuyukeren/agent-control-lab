@@ -51,6 +51,31 @@ for each step.
 - `--dry-run` prints model, effort, verification status (verified / UNVERIFIED / BLOCKED / nothing pinned)
   and the reason for each step, and calls no model.
 
+## Cost policy: `--policy economy|balanced|quality`
+
+Both workflows accept `--policy` (default `balanced`). It chooses an **effort** for steps whose effort you
+did not set; `--step-model` and `--step-effort` always win, including an explicit `auto`.
+
+It acts only on **verified** data and otherwise keeps the provider default, saying why in the dry run:
+
+- **Model:** never chosen. There is no verified cost or capability ranking, so the model is yours or the
+  provider's.
+- **Effort:** set only when you pinned the model and the provider reported its supported efforts (Codex
+  `model/list`). With no pinned model, or for Claude (per-model efforts are not documented), nothing can be
+  verified, so the policy does nothing. Today this means `balanced` changes nothing unless you pin a Codex
+  model.
+- **Base level:** economy `low`, balanced `medium`, quality `high`, then the nearest supported level at or
+  below the target (the lowest supported one if all are above it). The plan step gets +1 under `quality`
+  (it steers every later step). Task size is a text-length heuristic only (+1 large, -1 small except
+  economy), not a difficulty assessment.
+- **Quota:** used only when the reading is live or fresh and complete; `low`, `critical` or `exhausted`
+  lowers the level by one. Stale, partial, failed or missing quota counts as unknown and is not used
+  (never treated as healthy). It is read only when a step has a verifiable model.
+- **Never:** ultracode, a model switch, a provider switch, or an unverified setting (so no extra
+  `--accept-unverified` is ever caused by the policy).
+
+The dry run prints the policy line and, per step, the effort with the policy's reason.
+
 # plan-implement-review (infrastructure, first stage)
 
 ```

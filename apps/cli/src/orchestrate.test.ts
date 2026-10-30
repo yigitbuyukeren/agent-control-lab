@@ -257,3 +257,54 @@ describe('orchestrate plan-review: per-step model and effort', () => {
     expect(blocked.error).toContain('effort-unsupported');
   });
 });
+
+describe('orchestrate --policy', () => {
+  const REVIEW_GPT = ['--step-model', 'review=gpt-a'];
+
+  it('defaults to balanced and rejects unknown policies', () => {
+    const base = ['--workflow', 'plan-review', '--task', 'x', '--dry-run'];
+    expect(parseOrchestrateArgs(base)).toMatchObject({ policy: 'balanced' });
+    expect(parseOrchestrateArgs([...base, '--policy', 'economy'])).toMatchObject({ policy: 'economy' });
+    for (const bad of [['--policy'], ['--policy', 'auto'], ['--policy', 'ultracode'], ['--policy', 'Quality']]) {
+      expect(typeof parseOrchestrateArgs([...base, ...bad])).toBe('string');
+    }
+  });
+
+  it('changes nothing when no model is pinned, and says why', async () => {
+    const r = await go([...CONFIRM, '--policy', 'quality']);
+    expect(r.code).toBe(0);
+    for (const spec of r.specs) {
+      expect(spec.args).not.toContain('--effort');
+      expect(spec.args).not.toContain('-c');
+    }
+    const dry = await go([...DRY, '--policy', 'quality']);
+    expect(dry.out).toContain('policy: quality;');
+    expect(dry.out).toContain('quota not read');
+    expect(dry.out).toContain('policy quality: provider default kept: the model is not pinned');
+  });
+
+  it('sets a verified effort from the policy for a pinned model and shows the reason', async () => {
+    const eco = await go([...CONFIRM, ...REVIEW_GPT, '--policy', 'economy']);
+    expect(eco.specs[1]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=low']));
+    const quality = await go([...DRY, ...REVIEW_GPT, '--policy', 'quality']);
+    expect(quality.out).toContain('effort: medium (verified); reason: policy quality: medium (quality base high; small task text -1');
+    expect(quality.out).toContain('quota read');
+    expect(quality.out).toContain('quota unknown, not used');
+    expect(quality.out).toContain('verification: verified');
+  });
+
+  it('lets manual settings win, including an explicit auto', async () => {
+    const manual = await go([...CONFIRM, ...REVIEW_GPT, '--step-effort', 'review=medium', '--policy', 'economy']);
+    expect(manual.specs[1]?.args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort=medium']));
+    const auto = await go([...CONFIRM, ...REVIEW_GPT, '--step-effort', 'review=auto', '--policy', 'quality']);
+    expect(auto.specs[1]?.args).not.toContain('-c');
+    const dry = await go([...DRY, ...REVIEW_GPT, '--step-effort', 'review=medium', '--policy', 'quality']);
+    expect(dry.out).toContain('reason: requested with --step-effort review=medium');
+  });
+
+  it('never starts ultracode and never picks a model', async () => {
+    const r = await go([...CONFIRM, ...REVIEW_GPT, '--policy', 'quality']);
+    for (const spec of r.specs) expect(spec.args).not.toContain('ultracode');
+    expect(r.specs[0]?.args).not.toContain('--model');
+  });
+});

@@ -4,12 +4,16 @@ import {
   MAX_HANDOFF_CHARS,
   MAX_RUN_TIMEOUT_MS,
   WORKFLOW_NAMES,
+  DEFAULT_POLICY,
+  POLICY_NAMES,
   buildStepRequests,
   executeWorkflow,
+  isPolicyName,
   isWorkflowName,
   parseVerifyCommand,
   validateWorkingDir,
   planReviewSteps,
+  type PolicyName,
   type ProcessRunner,
   type StepRequests,
   type VerifyCommand,
@@ -17,7 +21,8 @@ import {
   type WorkflowName,
   type WorkflowResult,
 } from '@agent-control-lab/core';
-import type { PreflightDeps } from './preflight.ts';
+import type { PolicyDeps } from './policy.ts';
+import { applyPolicy } from './policy.ts';
 import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
 
 export interface OrchestrateIo {
@@ -25,7 +30,7 @@ export interface OrchestrateIo {
   readonly error: (text: string) => void;
 }
 
-export interface OrchestrateDeps extends PreflightDeps {
+export interface OrchestrateDeps extends PolicyDeps {
   readonly runner?: ProcessRunner;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
@@ -42,6 +47,8 @@ export interface OrchestrateArgs {
   readonly timeoutMs: number;
   readonly dryRun: boolean;
   readonly acceptUnverified: boolean;
+  /** Cost policy for steps whose effort was not set manually; manual step settings always win. */
+  readonly policy: PolicyName;
   /** Model and effort asked for each step (`--step-model`, `--step-effort`); `auto` keeps the provider default. */
   readonly steps: StepRequests;
   /** `plan-implement-review` only: the existing isolated worktree the implementation may write to. */
@@ -67,6 +74,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   let confirmVerify = false;
   let allowPartialIgnored = false;
   let workspace: string | undefined;
+  let policy: PolicyName = DEFAULT_POLICY;
   const stepModels: string[] = [];
   const stepEfforts: string[] = [];
   let verifyText: string | undefined;
@@ -89,6 +97,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       const value = args[(i += 1)];
       if (value === undefined) return `${arg} needs step=value, for example ${arg} plan=auto`;
       (arg === '--step-model' ? stepModels : stepEfforts).push(value);
+    } else if (arg === '--policy') {
+      const value = args[(i += 1)];
+      if (value === undefined || !isPolicyName(value)) return `--policy must be one of: ${POLICY_NAMES.join(', ')}`;
+      policy = value;
     } else if (arg === '--workspace') {
       workspace = args[(i += 1)];
       if (workspace === undefined || workspace === '') return '--workspace needs an existing Git worktree directory';
@@ -133,7 +145,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
   if (confirmWrite || confirmVerify || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
     return '--workspace, --verify-command, --confirm-verify, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
@@ -141,11 +153,15 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';
   }
-  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, steps };
+  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, steps };
 }
 
 export function seconds(ms: number): string {
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+export function policyLine(policy: PolicyName, quotaNote: string): string {
+  return `  policy: ${policy}; manual --step-model/--step-effort settings win; it only sets an effort it can verify and never picks a model or ultracode; quota ${quotaNote}\n`;
 }
 
 export function formatStep(step: StepResult, index: number, total: number): string {
@@ -190,7 +206,8 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     return 1;
   }
   // Every step's own safety checks run first, and nothing starts unless all of them pass.
-  const pfs = await preflightSteps(args.workflow, args.steps, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, deps);
+  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps);
+  const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, reviewPf] = pfs;
   if (planPf?.claude === undefined || reviewPf?.codex === undefined) throw new Error('plan-review needs a claude and a codex step');
   const ready = pfs.every(stepOk);
@@ -200,6 +217,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
       'orchestrate plan (dry run, no agent started)\n' +
         `  workflow: ${args.workflow}\n  cwd: ${cwd}\n  timeout: ${String(args.timeoutMs / 1000)}s per step\n` +
         `  task: ${String(args.task.length)} characters\n` +
+        policyLine(args.policy, chosen.quotaNote) +
         `  step 1/2 plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
         selectionLines(planPf) +
         stepDetails(planPf) +

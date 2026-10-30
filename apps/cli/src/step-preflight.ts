@@ -66,7 +66,8 @@ export function stepDetails(sp: StepPreflight): string {
   return plan?.ok === false ? plan.issues.map((i) => `      issue: ${describeIssue(i)}\n`).join('') : '';
 }
 
-function pinReason(flag: string, step: SelectionStep, fromFlag: boolean, value: string): string {
+function pinReason(flag: string, step: SelectionStep, fromFlag: boolean, value: string, policy?: { name: string; note: string }): string {
+  if (!fromFlag && policy !== undefined) return `policy ${policy.name}: ${policy.note}`;
   if (!fromFlag) return 'no flag: the provider default is kept (which model or level that is, is decided by the provider and not known here)';
   return value === 'auto'
     ? `${flag} ${step}=auto: the provider default is kept, as above`
@@ -87,7 +88,7 @@ export function selectionLines(sp: StepPreflight): string {
         : 'verified';
   return (
     `      model: ${describePinned(selection.model)}; reason: ${pinReason('--step-model', sp.step, modelFromFlag, request.model)}\n` +
-    `      effort: ${describePinned(selection.effort)}; reason: ${pinReason('--step-effort', sp.step, effortFromFlag, request.effort)}\n` +
+    `      effort: ${describePinned(selection.effort)}; reason: ${pinReason('--step-effort', sp.step, effortFromFlag, request.effort, sp.requested.policy)}\n` +
     `      verification: ${status}\n` +
     selection.issues.map((i) => `      selection issue: ${describeIssue(i)}\n`).join('')
   );

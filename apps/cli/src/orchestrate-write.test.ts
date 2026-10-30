@@ -488,3 +488,29 @@ describe('plan-implement-review: per-step model and effort', () => {
     }
   });
 });
+
+describe('plan-implement-review: --policy', () => {
+  it('applies to the implement step of a pinned model, shows the policy line and keeps manual settings first', async () => {
+    const dry = await go([...ARGS(), '--dry-run', '--step-model', 'implement=gpt-a', '--policy', 'economy']);
+    expect(dry.out).toContain('policy: economy;');
+    expect(dry.out).toContain('effort: low (verified); reason: policy economy: low (economy base low');
+    expect(dry.out).toContain('policy economy: provider default kept: the model is not pinned');
+    const real = await go([...WRITE(), '--step-model', 'implement=gpt-a', '--policy', 'quality'], { onCodex: editFile() });
+    expect(real.code).toBe(0);
+    const codex = real.specs.find((s) => s.command === 'codex');
+    expect(codex?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=medium']));
+  });
+
+  it('keeps a manual effort over the policy', async () => {
+    const manual = await go([...WRITE(), '--step-model', 'implement=gpt-a', '--step-effort', 'implement=low', '--policy', 'quality'], { onCodex: editFile() });
+    expect(manual.specs.find((s) => s.command === 'codex')?.args).toEqual(expect.arrayContaining(['-c', 'model_reasoning_effort=low']));
+  });
+
+  it('never changes Claude steps: their per-model efforts are not verifiable', async () => {
+    const r = await go([...WRITE(), '--step-model', 'plan=claude-sonnet-5-5', '--policy', 'quality', '--accept-unverified'], { onCodex: editFile() });
+    expect(r.code).toBe(0);
+    const claude = r.specs.filter((s) => s.command === 'claude');
+    expect(claude[0]?.args).toEqual(expect.arrayContaining(['--model', 'claude-sonnet-5-5']));
+    for (const spec of claude) expect(spec.args).not.toContain('--effort');
+  });
+});

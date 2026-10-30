@@ -32,6 +32,8 @@ export interface StepRequest {
   readonly request: SelectionRequest;
   readonly modelFromFlag: boolean;
   readonly effortFromFlag: boolean;
+  /** Set by the policy step: what the policy did for this step and why. */
+  readonly policy?: { readonly name: string; readonly note: string };
 }
 
 export type StepRequests = Readonly<Partial<Record<SelectionStep, StepRequest>>>;

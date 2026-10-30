@@ -23,6 +23,18 @@ const selectionFor = (r: Partial<SelectionRequest> = {}): Selection =>
   resolveSelection('codex', { ...DEFAULT_REQUEST, ...r }, { claude: claudeRegistry, codex: { state: 'ok', models: [model] } });
 const auth = (over: Partial<AuthStatus>): AuthStatus => ({ id: 'codex', displayName: 'Codex', state: 'logged-in', method: 'subscription', ...over });
 
+describe('buildCodexExecArgs: write sandbox', () => {
+  it('only differs in the sandbox value and never builds a bypass or full-access flag', () => {
+    const write = buildCodexExecArgs(selectionFor(), 'workspace-write');
+    expect(write).toEqual(['exec', '-s', 'workspace-write', '--color', 'never', '--ephemeral', '-']);
+    const joined = buildCodexExecArgs(selectionFor({ model: 'gpt-a', effort: 'low' }), 'workspace-write').join(' ');
+    for (const bad of ['danger', 'bypass', '--add-dir', 'full-access', '--full-auto', 'api-key']) expect(joined).not.toContain(bad);
+  });
+  it('defaults to read-only', () => {
+    expect(buildCodexExecArgs(selectionFor())[2]).toBe('read-only');
+  });
+});
+
 describe('buildCodexExecArgs', () => {
   it('is read-only, ephemeral, stdin-prompted and pins nothing for auto', () => {
     expect(buildCodexExecArgs(selectionFor())).toEqual(['exec', '-s', 'read-only', '--color', 'never', '--ephemeral', '-']);

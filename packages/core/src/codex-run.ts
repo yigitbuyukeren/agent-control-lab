@@ -17,15 +17,21 @@ export function codexRunEnv(env: Readonly<Record<string, string | undefined>>): 
 }
 
 /**
+ * The only two sandbox modes ever built. `workspace-write` is used solely by the isolated-workspace
+ * implementation step; `danger-full-access` and the approval/sandbox bypass flag are never built.
+ */
+export type CodexSandbox = 'read-only' | 'workspace-write';
+
+/**
  * Verified against `codex exec --help`: `-s read-only` sandbox, `-m` model, `-c key=value`
  * config override (bare values fall back to literal strings), `--ephemeral`, `--color never`,
  * and `-` to read the prompt from stdin. No bypass or write-capable flags are ever built.
  */
-export function buildCodexExecArgs(selection: Selection): string[] {
+export function buildCodexExecArgs(selection: Selection, sandbox: CodexSandbox = 'read-only'): string[] {
   return [
     'exec',
     '-s',
-    'read-only',
+    sandbox,
     '--color',
     'never',
     '--ephemeral',
@@ -110,6 +116,8 @@ export interface CodexRunRequest {
   readonly selection: Selection;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
+  /** Defaults to `read-only`. */
+  readonly sandbox?: CodexSandbox;
 }
 
 export interface CodexRunDeps {
@@ -130,7 +138,7 @@ export async function runCodex(request: CodexRunRequest, deps: CodexRunDeps = {}
   const runner = deps.runner ?? runProcess;
   const outcome = await runner({
     command: 'codex',
-    args: buildCodexExecArgs(request.selection),
+    args: buildCodexExecArgs(request.selection, request.sandbox),
     cwd: request.cwd,
     env: codexRunEnv(deps.env ?? process.env),
     input: request.task,

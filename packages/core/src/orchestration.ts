@@ -1,14 +1,21 @@
 import type { CodexRunOutcome } from './codex-run.ts';
 
-export type StepProvider = 'claude' | 'codex';
+/** `local` steps run no model: read-only Git inspection or a user-chosen verification command. */
+export type StepProvider = 'claude' | 'codex' | 'local';
 
 export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeout' | 'cancelled' | 'skipped';
 
 /** What one step reports; a step never throws into the executor and never surfaces raw errors. */
-export type StepOutcome = CodexRunOutcome;
+export type StepOutcome =
+  | CodexRunOutcome
+  /**
+   * The step ran but its result broke a rule. `error` must be built from fixed codes only, never
+   * from provider text; `output` is a report for the user and is kept.
+   */
+  | { readonly kind: 'rejected'; readonly error: string; readonly output?: string };
 
 /** Fixed, non-sensitive error text per failure kind. Raw stderr, stdout and messages are dropped. */
-export const STEP_ERRORS: Record<Exclude<StepOutcome['kind'], 'completed'>, string> = {
+export const STEP_ERRORS: Record<Exclude<StepOutcome['kind'], 'completed' | 'rejected'>, string> = {
   failed: 'the provider run failed',
   timeout: 'the step timed out',
   cancelled: 'the step was cancelled',
@@ -26,6 +33,11 @@ export interface StepDefinition {
   /** Builds this step's prompt from earlier steps' bounded outputs (keyed by step id). */
   readonly prompt: (inputs: Readonly<Record<string, string>>) => string;
   readonly run: (prompt: string, signal: AbortSignal | undefined) => Promise<StepOutcome>;
+  /**
+   * Runs even after an earlier step failed or the run was cancelled (never skipped), for local
+   * read-only reporting such as the final workspace state. It cannot undo the stop.
+   */
+  readonly always?: boolean;
 }
 
 export interface StepResult {
@@ -92,13 +104,14 @@ export async function executeWorkflow(
   let stopped = false;
   for (const [index, step] of steps.entries()) {
     const base = { id: step.id, title: step.title, provider: step.provider } as const;
-    if (stopped) {
+    const forced = step.always === true;
+    if (stopped && !forced) {
       const skipped: StepResult = { ...base, status: 'skipped' };
       results.push(skipped);
       deps.onUpdate?.(skipped, index, total);
       continue;
     }
-    if (deps.signal?.aborted === true) {
+    if (deps.signal?.aborted === true && !forced) {
       const cancelled: StepResult = { ...base, status: 'cancelled', error: STEP_ERRORS.cancelled };
       results.push(cancelled);
       deps.onUpdate?.(cancelled, index, total);
@@ -126,6 +139,9 @@ export async function executeWorkflow(
         ...(outcome.truncated ? { truncated: true } : {}),
         ...(handoff.truncated ? { handoffTruncated: true } : {}),
       };
+    } else if (outcome.kind === 'rejected') {
+      result = { ...base, status: 'failed', durationMs, error: outcome.error, ...(outcome.output === undefined ? {} : { output: outcome.output }) };
+      stopped = true;
     } else {
       const status = outcome.kind === 'timeout' || outcome.kind === 'cancelled' ? outcome.kind : 'failed';
       result = { ...base, status, durationMs, error: STEP_ERRORS[outcome.kind] };

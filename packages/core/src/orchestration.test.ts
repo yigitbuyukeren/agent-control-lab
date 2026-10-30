@@ -141,3 +141,44 @@ describe('boundText / untrustedBlock', () => {
     expect(block.match(/<<<BEGIN UNTRUSTED PLAN N1>>>/g)).toHaveLength(1);
   });
 });
+
+describe('executeWorkflow: rejected outcomes and always-run steps', () => {
+  const always = (id: string, outcome: StepOutcome, seen: string[] = []): StepDefinition => ({
+    ...step(id, outcome, seen),
+    provider: 'local',
+    always: true,
+  });
+
+  it('turns a rejected outcome into a failed step that keeps its report and fixed error', async () => {
+    const ran: string[] = [];
+    const result = await executeWorkflow('w', [step('a', { kind: 'rejected', error: 'workspace policy: head-moved', output: 'REPORT' }), step('b', done('x'), ran)]);
+    expect(result.steps[0]).toMatchObject({ status: 'failed', error: 'workspace policy: head-moved', output: 'REPORT' });
+    expect(result.steps[1]?.status).toBe('skipped');
+    expect(ran).toEqual([]);
+    expect(result.partial).toBe(false);
+  });
+
+  it('runs an always step after a failure, but still skips ordinary steps after it', async () => {
+    const seen: string[] = [];
+    const result = await executeWorkflow('w', [step('a', { kind: 'failed' }), always('inspect', done('STATE'), seen), step('c', done('x'), seen)], { clock: fakeClock() });
+    expect(result.steps.map((s) => [s.id, s.status])).toEqual([['a', 'failed'], ['inspect', 'completed'], ['c', 'skipped']]);
+    expect(result.steps[1]).toMatchObject({ provider: 'local', output: 'STATE', durationMs: 100 });
+    expect(result.status).toBe('failed');
+    expect(seen).toEqual(['inspect:{}']);
+  });
+
+  it('runs an always step even when the signal is already aborted, and cancels the ordinary ones', async () => {
+    const controller = new AbortController();
+    const first: StepDefinition = { ...step('a', done('P')), run: () => { controller.abort(); return Promise.resolve(done('P')); } };
+    const seen: string[] = [];
+    const result = await executeWorkflow('w', [first, always('inspect', done('STATE'), seen), step('c', done('x'), seen)], { signal: controller.signal });
+    expect(result.steps.map((s) => [s.id, s.status])).toEqual([['a', 'completed'], ['inspect', 'completed'], ['c', 'cancelled']]);
+    expect(result.status).toBe('cancelled');
+  });
+
+  it('still reports a failing always step and stops the rest', async () => {
+    const result = await executeWorkflow('w', [step('a', done('P')), always('inspect', { kind: 'rejected', error: 'workspace policy: no-changes' }), step('c', done('x'))]);
+    expect(result.steps.map((s) => s.status)).toEqual(['completed', 'failed', 'skipped']);
+    expect(result.partial).toBe(true);
+  });
+});

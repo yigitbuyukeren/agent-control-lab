@@ -47,3 +47,7 @@ export * from './claude-settings.ts';
 export * from './repo-roots.ts';
 export * from './orchestration.ts';
 export * from './workflows.ts';
+export * from './git-state.ts';
+export * from './workspace-policy.ts';
+export * from './workspace-guard.ts';
+export * from './verify.ts';

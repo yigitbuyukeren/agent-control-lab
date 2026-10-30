@@ -57,6 +57,7 @@ export async function applyPolicy(
   requests: StepRequests,
   deps: PolicyDeps,
   routing: ModelRouting = 'auto',
+  group?: string,
 ): Promise<PolicyResult> {
   const size = estimateTaskSize(task);
   const kind = routing === 'auto' ? 'general' : classifyTask(task);
@@ -88,7 +89,7 @@ export async function applyPolicy(
           },
         };
       } else {
-        const decision = chooseMeasured(deps.outcomes === undefined ? [] : await records(), { provider, step, task: kind, size }, (deps.now ?? (() => new Date()))());
+        const decision = chooseMeasured(deps.outcomes === undefined ? [] : await records(), { provider, step, task: kind, size, ...(group === undefined ? {} : { group }) }, (deps.now ?? (() => new Date()))());
         const evidence = deps.outcomes === undefined ? ['no local outcome store available', ...decision.evidence] : [...decision.evidence];
         const choice = decision.choice;
         let note = decision.note;

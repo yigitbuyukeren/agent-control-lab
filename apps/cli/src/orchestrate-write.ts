@@ -53,7 +53,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   const prep = await prepareWorkspace(cwd, gitDeps, { allowPartialIgnored: args.allowPartialIgnored === true });
   // The write target must be the worktree root itself, not a folder inside it.
   const atRoot = prep.ok ? relative(prep.before.root, cwd) === '' : prep.reason === 'workspace-rejected' && relative(prep.snapshot.root, cwd) === '';
-  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting);
+  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting, args.evalGroup);
   const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, implementPf, reviewPf] = pfs;
   if (planPf === undefined || implementPf?.codex === undefined || reviewPf === undefined) throw new Error('plan-implement-review needs plan, implement and review steps');
@@ -155,7 +155,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     },
   });
   io.out(formatResult(result));
-  io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, (deps.now ?? (() => new Date()))()));
+  io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, args.evalGroup, (deps.now ?? (() => new Date()))()));
   const wrote = result.steps.some((s) => s.id === 'implement' && s.status !== 'skipped' && s.status !== 'pending');
   const partial = wrote && result.status !== 'completed' ? 'The workspace may contain partial changes; nothing was reverted. ' : '';
   io.out(

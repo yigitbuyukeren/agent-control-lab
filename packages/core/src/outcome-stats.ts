@@ -7,12 +7,23 @@ import type { TaskSensitivity } from './step-router.ts';
 export const MIN_MEASURED = 8;
 /** Records older than this are ignored: models and providers change. */
 export const MAX_AGE_DAYS = 90;
+/**
+ * Without a user-defined test group the tasks behind two models' records are not known to be alike, so the data
+ * must at least be spread over several days and overlap in time (otherwise one easy afternoon can look like a model).
+ */
+export const MIN_DAYS = 3;
+/** A chosen model must not fail (error or timeout) more than this share of its runs... */
+export const MAX_FAILURE_RATE = 0.2;
+/** ...nor more than this much above any rival, or it would look good only because the hard runs never finish. */
+export const FAILURE_RATE_MARGIN = 0.1;
 
 export interface MeasureKey {
   readonly provider: 'claude' | 'codex';
   readonly step: SelectionStep;
   readonly task: TaskSensitivity;
   readonly size: TaskSize;
+  /** The user-defined test group, or undefined for ordinary (unlabelled) records. */
+  readonly group?: string;
 }
 
 export interface MeasuredGroup {
@@ -27,6 +38,13 @@ export interface MeasuredGroup {
   readonly high: number;
   readonly medianSeconds: number;
   readonly eligible: boolean;
+  /** All recorded runs, measured or not. */
+  readonly attempts: number;
+  /** (error + timeout) / attempts */
+  readonly failureRate: number;
+  readonly days: number;
+  readonly firstDay: string;
+  readonly lastDay: string;
 }
 
 export function wilson(pass: number, n: number): { low: number; high: number } {
@@ -52,6 +70,7 @@ export function groupOutcomes(records: readonly OutcomeRecord[], key: MeasureKey
   const groups = new Map<string, OutcomeRecord[]>();
   for (const r of records) {
     if (r.provider !== key.provider || r.step !== key.step || r.task !== key.task || r.size !== key.size) continue;
+    if ((r.group ?? '') !== (key.group ?? '')) continue;
     if (Date.parse(`${r.day}T00:00:00Z`) < cutoff) continue;
     const k = `${r.model}\u0000${r.effort}`;
     groups.set(k, [...(groups.get(k) ?? []), r]);
@@ -71,6 +90,11 @@ export function groupOutcomes(records: readonly OutcomeRecord[], key: MeasureKey
         high,
         medianSeconds: median(rs.filter((r) => r.outcome === 'pass' || r.outcome === 'fail').map((r) => r.seconds)),
         eligible: measured >= MIN_MEASURED,
+        attempts: rs.length,
+        failureRate: (counts.error + counts.timeout) / rs.length,
+        days: new Set(rs.map((r) => r.day)).size,
+        firstDay: rs.map((r) => r.day).sort()[0] ?? '',
+        lastDay: rs.map((r) => r.day).sort().at(-1) ?? '',
       };
     })
     .sort((a, b) => b.measured - a.measured || a.model.localeCompare(b.model) || a.effort.localeCompare(b.effort));
@@ -85,6 +109,11 @@ export interface MeasuredDecision {
 
 const pct = (x: number): string => `${String(Math.round(x * 100))}%`;
 
+/** One line per group, shared by the dry run and `outcomes`: results, failures and how much data there is. */
+export function groupLine(g: MeasuredGroup): string {
+  return `${g.model} / ${g.effort}: ${String(g.counts.pass)} pass, ${String(g.counts.fail)} fail (rate ${pct(g.rate)}, 95% interval ${pct(g.low)}-${pct(g.high)}), ${String(g.counts.error)} error, ${String(g.counts.timeout)} timeout (${pct(g.failureRate)} of ${String(g.attempts)} runs), ${String(g.counts.unmeasured)} unmeasured, median ${String(g.medianSeconds)}s, ${String(g.days)} day(s) ${g.firstDay}..${g.lastDay}${g.eligible ? '' : ' (too few to count)'}`;
+}
+
 /**
  * Chooses only when at least two comparable groups each have `MIN_MEASURED` measured outcomes and the best
  * one's 95% interval lies entirely above every other eligible group's. Overlapping intervals, too little data or
@@ -94,12 +123,9 @@ export function chooseMeasured(records: readonly OutcomeRecord[], key: MeasureKe
   const groups = groupOutcomes(records, key, now);
   const total = groups.reduce((n, g) => n + g.measured, 0);
   const evidence = [
-    `measurement key: ${key.provider} ${key.step}, ${key.task} task, ${key.size} size; last ${String(MAX_AGE_DAYS)} days; needs ${String(MIN_MEASURED)}+ measured outcomes per group and 2+ groups`,
+    `measurement key: ${key.provider} ${key.step}, ${key.task} task, ${key.size} size, ${key.group === undefined ? 'unlabelled records only (task identity unknown)' : `test group "${key.group}" (the same task set is the user's own definition)`}; last ${String(MAX_AGE_DAYS)} days; needs ${String(MIN_MEASURED)}+ measured outcomes per group and 2+ groups`,
     `measured outcomes (pass or fail by a local check, never the model's own claim): ${String(total)} in ${String(groups.length)} group(s)`,
-    ...groups.map(
-      (g) =>
-        `  ${g.model} / ${g.effort}: ${String(g.counts.pass)} pass, ${String(g.counts.fail)} fail (rate ${pct(g.rate)}, 95% interval ${pct(g.low)}-${pct(g.high)}), ${String(g.counts.error + g.counts.timeout)} error/timeout, ${String(g.counts.unmeasured)} unmeasured, median ${String(g.medianSeconds)}s${g.eligible ? '' : ' (too few to count)'}`,
-    ),
+    ...groups.map((g) => `  ${groupLine(g)}`),
   ];
   const eligible = groups.filter((g) => g.eligible);
   if (eligible.length < 2) {
@@ -114,5 +140,23 @@ export function chooseMeasured(records: readonly OutcomeRecord[], key: MeasureKe
   }
   evidence.push(`uncertainty: ${best.model} / ${best.effort} lower bound ${pct(best.low)} exceeds every other group's upper bound`);
   if (best.model === 'default') return { note: 'provider default kept: the default measured clearly best', evidence };
+  if (key.group === undefined) {
+    const thin = eligible.filter((g) => g.days < MIN_DAYS);
+    if (thin.length > 0) {
+      evidence.push(`not comparable: ${thin.map((g) => `${g.model} / ${g.effort}`).join(', ')} cover fewer than ${String(MIN_DAYS)} days, and the tasks behind unlabelled records are not known to be alike`);
+      return { note: 'provider default kept: no reliable comparison (data too concentrated in time; use --eval-group for a defined test set)', evidence };
+    }
+    const apart = rivals.filter((g) => g.firstDay > best.lastDay || best.firstDay > g.lastDay);
+    if (apart.length > 0) {
+      evidence.push(`not comparable: ${apart.map((g) => `${g.model} / ${g.effort}`).join(', ')} were measured in a different period than ${best.model} / ${best.effort}`);
+      return { note: 'provider default kept: no reliable comparison (the groups were measured at different times)', evidence };
+    }
+  }
+  const worse = rivals.filter((g) => best.failureRate > g.failureRate + FAILURE_RATE_MARGIN);
+  if (best.failureRate > MAX_FAILURE_RATE || worse.length > 0) {
+    evidence.push(`reliability: ${best.model} / ${best.effort} ended in error or timeout in ${pct(best.failureRate)} of its runs${worse.length > 0 ? `, clearly more than ${worse.map((g) => `${g.model} / ${g.effort} (${pct(g.failureRate)})`).join(', ')}` : ''}; its pass rate counts only runs that finished`);
+    return { note: 'provider default kept: the better pass rate comes with too many errors or timeouts', evidence };
+  }
+  evidence.push(`reliability: error/timeout ${pct(best.failureRate)} for ${best.model} / ${best.effort}, within ${pct(MAX_FAILURE_RATE)} and within ${pct(FAILURE_RATE_MARGIN)} of every rival`);
   return { choice: { model: best.model, effort: best.effort }, note: `${best.model} / ${best.effort}: measurably better than every other comparable group`, evidence };
 }

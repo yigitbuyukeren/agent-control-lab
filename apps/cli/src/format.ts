@@ -1,4 +1,4 @@
-import { groupOutcomes, type ClaudeRefusalReason, type MeasureKey, type OutcomeRecord, type Pinned, type RefusalReason, type SelectionIssue } from '@agent-control-lab/core';
+import { groupLine, groupOutcomes, type ClaudeRefusalReason, type MeasureKey, type OutcomeRecord, type Pinned, type RefusalReason, type SelectionIssue } from '@agent-control-lab/core';
 
 export function describePinned(pinned: Pinned): string {
   if (pinned.kind === 'provider-default') return 'provider-default';
@@ -68,13 +68,14 @@ export const CLAUDE_REFUSALS: Record<ClaudeRefusalReason, string> = {
 export function formatOutcomes(records: readonly OutcomeRecord[], now: Date): string {
   if (records.length === 0) return 'outcomes: no local records (they are written by real orchestrate runs; --no-record skips)\n';
   const keys = new Map<string, MeasureKey>();
-  for (const r of records) keys.set(`${r.provider}|${r.step}|${r.task}|${r.size}`, { provider: r.provider, step: r.step, task: r.task, size: r.size });
+  for (const r of records) {
+    keys.set(`${r.provider}|${r.step}|${r.task}|${r.size}|${r.group ?? ''}`, { provider: r.provider, step: r.step, task: r.task, size: r.size, ...(r.group === undefined ? {} : { group: r.group }) });
+  }
+  const label = (k: MeasureKey): string => `${k.provider} ${k.step}, ${k.task} task, ${k.size}${k.group === undefined ? '' : `, test group "${k.group}"`}`;
   let text = `outcomes: ${String(records.length)} local record(s); only a local check (verification command, workspace inspection) counts as pass or fail\n`;
-  for (const key of [...keys.values()].sort((a, b) => `${a.provider}${a.step}${a.task}${a.size}`.localeCompare(`${b.provider}${b.step}${b.task}${b.size}`))) {
-    text += `  ${key.provider} ${key.step}, ${key.task} task, ${key.size}:\n`;
-    for (const g of groupOutcomes(records, key, now)) {
-      text += `    ${g.model} / ${g.effort}: ${String(g.counts.pass)} pass, ${String(g.counts.fail)} fail, ${String(g.counts.error + g.counts.timeout)} error/timeout, ${String(g.counts.unmeasured)} unmeasured, median ${String(g.medianSeconds)}s${g.eligible ? '' : ' (too few to count)'}\n`;
-    }
+  for (const key of [...keys.values()].sort((a, b) => label(a).localeCompare(label(b)))) {
+    text += `  ${label(key)}:\n`;
+    for (const g of groupOutcomes(records, key, now)) text += `    ${groupLine(g)}\n`;
   }
   return text;
 }

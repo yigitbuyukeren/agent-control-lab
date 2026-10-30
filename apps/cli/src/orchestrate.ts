@@ -8,6 +8,7 @@ import {
   POLICY_NAMES,
   buildStepRequests,
   executeWorkflow,
+  isEvalGroup,
   isModelRouting,
   isPolicyName,
   MODEL_ROUTINGS,
@@ -57,6 +58,8 @@ export interface OrchestrateArgs {
   readonly modelRouting?: ModelRouting;
   /** Record what the run objectively showed (see `outcomes`); `--no-record` turns it off. */
   readonly record?: boolean;
+  /** A neutral label for a test group you defined (`--eval-group`): records are tagged with it and measured routing compares only within it. */
+  readonly evalGroup?: string;
   /** Model and effort asked for each step (`--step-model`, `--step-effort`); `auto` keeps the provider default. */
   readonly steps: StepRequests;
   /** `plan-implement-review` only: the existing isolated worktree the implementation may write to. */
@@ -85,6 +88,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   let policy: PolicyName = DEFAULT_POLICY;
   let modelRouting: ModelRouting = 'auto';
   let record = true;
+  let evalGroup: string | undefined;
   const stepModels: string[] = [];
   const stepEfforts: string[] = [];
   let verifyText: string | undefined;
@@ -111,6 +115,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       const value = args[(i += 1)];
       if (value === undefined || !isPolicyName(value)) return `--policy must be one of: ${POLICY_NAMES.join(', ')}`;
       policy = value;
+    } else if (arg === '--eval-group') {
+      const value = args[(i += 1)];
+      if (value === undefined || !isEvalGroup(value)) return '--eval-group needs a neutral label of lowercase letters, digits and dashes (at most 40 characters), never task text or anything private';
+      evalGroup = value;
     } else if (arg === '--no-record') {
       record = false;
     } else if (arg === '--model-routing') {
@@ -161,7 +169,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, ...(evalGroup === undefined ? {} : { evalGroup }), steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
   if (confirmWrite || confirmVerify || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
     return '--workspace, --verify-command, --confirm-verify, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
@@ -169,7 +177,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';
   }
-  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, steps };
+  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, ...(evalGroup === undefined ? {} : { evalGroup }), steps };
 }
 
 export function seconds(ms: number): string {
@@ -236,7 +244,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     return 1;
   }
   // Every step's own safety checks run first, and nothing starts unless all of them pass.
-  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting);
+  const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting, args.evalGroup);
   const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, reviewPf] = pfs;
   if (planPf?.claude === undefined || reviewPf?.codex === undefined) throw new Error('plan-review needs a claude and a codex step');
@@ -291,6 +299,6 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     },
   });
   io.out(formatResult(result));
-  io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, (deps.now ?? (() => new Date()))()));
+  io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, args.evalGroup, (deps.now ?? (() => new Date()))()));
   return result.status === 'completed' ? 0 : result.status === 'cancelled' ? 130 : 1;
 }

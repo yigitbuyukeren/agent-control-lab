@@ -30,6 +30,18 @@ export interface OutcomeRecord {
   readonly outcome: OutcomeKind;
   /** Whole seconds. */
   readonly seconds: number;
+  /**
+   * A neutral label the user gave with `--eval-group` for a test group they defined and approved (see
+   * `isEvalGroup`). Records with a label are only ever compared with records of the same label, and unlabelled
+   * records never mix with labelled ones. It is a label, not task text.
+   */
+  readonly group?: string;
+}
+
+const EVAL_GROUP = /^[a-z0-9][a-z0-9-]{0,39}$/;
+
+export function isEvalGroup(value: string): boolean {
+  return EVAL_GROUP.test(value);
 }
 
 /** Where records live; failures to read or write must never break a run. */
@@ -57,7 +69,8 @@ export function parseOutcomeLine(line: string): OutcomeRecord | undefined {
   }
   if (typeof data !== 'object' || data === null || Array.isArray(data)) return undefined;
   const r = data as Record<string, unknown>;
-  const { day, step, provider, model, effort, task, size, outcome, seconds } = r;
+  const { day, step, provider, model, effort, task, size, outcome, seconds, group } = r;
+  if (group !== undefined && (typeof group !== 'string' || !isEvalGroup(group))) return undefined;
   if (r['v'] !== 1 || typeof day !== 'string' || !DAY.test(day)) return undefined;
   if (typeof step !== 'string' || !STEPS.includes(step)) return undefined;
   if (provider !== 'claude' && provider !== 'codex') return undefined;
@@ -77,6 +90,7 @@ export function parseOutcomeLine(line: string): OutcomeRecord | undefined {
     size: size as TaskSize,
     outcome: outcome as OutcomeKind,
     seconds: Math.round(seconds),
+    ...(group === undefined ? {} : { group }),
   };
 }
 
@@ -88,6 +102,7 @@ export interface RunFacts {
   readonly day: string;
   readonly task: TaskSensitivity;
   readonly size: TaskSize;
+  readonly group?: string;
   /** What each selectable step was started with (`auto` for a provider default). */
   readonly steps: Readonly<Partial<Record<SelectionStep, { provider: 'claude' | 'codex'; model: string; effort: string }>>>;
 }
@@ -123,6 +138,7 @@ export function recordsFromRun(result: WorkflowResult, facts: RunFacts): Outcome
       size: facts.size,
       outcome,
       seconds: Math.round((r.durationMs ?? 0) / 1000),
+      ...(facts.group === undefined ? {} : { group: facts.group }),
     });
   }
   return records;

@@ -213,3 +213,24 @@ directory (`ACL_CACHE_DIR` overrides it), owner-only where the platform allows i
   effort, otherwise the default is kept. Manual `--step-model` / `--step-effort` always win; ultracode is never
   selected. Nothing is run to collect data: no benchmark, no extra model call.
 - `--dry-run` prints the data amount per group, the intervals, the uncertainty and the reason.
+
+### Reliability of the records and of the comparison
+
+- **Concurrent runs:** every change to `outcomes.jsonl` takes a lock directory (`outcomes.lock`, created with `mkdir`,
+  atomic on Windows, macOS and Linux), re-reads the file inside the lock, and replaces it through a unique temp file
+  and a rename, so parallel runs lose no record and a crash never leaves a half-written file. A lock older than 15 s
+  (a dead process) is taken over; waiting is bounded to 10 s, after which the run reports "could not be recorded
+  locally" and carries on. Readers take no lock. A lock taken over at the very moment its owner wakes up is the one
+  case this does not cover.
+- **Comparable data only:** records are grouped by provider, step, task type and size. Without a test group the tasks
+  behind two models' records are unknown, so a non-default model is chosen only if every compared group covers
+  3+ days and the groups were measured in overlapping periods. Otherwise the default stays and the dry run says "not
+  comparable".
+- **Test groups:** `--eval-group <label>` (lowercase letters, digits, dashes, at most 40 characters; a label, never task
+  text) tags the run's records and, with `--model-routing measured`, compares only records of that same label.
+  Labelled and unlabelled records never mix. Passing the label is your statement that the group's runs use the same
+  task set; the tool cannot check that, and says so. No benchmark is run: you run the tasks yourself, with
+  `--step-model` / `--step-effort`, and the manual runs are what gets recorded.
+- **Errors and timeouts:** each group line shows pass, fail, error, timeout, the share of runs that ended in error or
+  timeout, unmeasured runs, median seconds and days covered. A model whose better pass rate hides many failed runs is
+  not chosen: its error/timeout share must be at most 20% and at most 10 points above every rival's.

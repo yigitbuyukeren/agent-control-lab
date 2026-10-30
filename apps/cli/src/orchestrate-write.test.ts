@@ -536,10 +536,13 @@ const memory = (initial: OutcomeRecord[] = []): OutcomeStore & { saved: OutcomeR
   return { saved, load: () => Promise.resolve([...saved]), append: (r) => { saved.push(...r); return Promise.resolve(); }, clear: () => { saved.length = 0; return Promise.resolve(); } };
 };
 const rec = (model: string, effort: string, outcome: OutcomeRecord['outcome']): OutcomeRecord => ({ v: 1, day: '2026-10-20', step: 'implement', provider: 'codex', model, effort, task: 'general', size: 'small', outcome, seconds: 20 });
-const rows = (model: string, effort: string, pass: number, fail: number): OutcomeRecord[] => [
-  ...Array.from({ length: pass }, () => rec(model, effort, 'pass')),
-  ...Array.from({ length: fail }, () => rec(model, effort, 'fail')),
-];
+const SPREAD = ['2026-10-17', '2026-10-18', '2026-10-19', '2026-10-20'];
+const rows = (model: string, effort: string, pass: number, fail: number, group?: string): OutcomeRecord[] =>
+  [...Array.from({ length: pass }, () => 'pass' as const), ...Array.from({ length: fail }, () => 'fail' as const)].map((outcome, i) => ({
+    ...rec(model, effort, outcome),
+    day: SPREAD[i % 4] ?? '2026-10-20',
+    ...(group === undefined ? {} : { group }),
+  }));
 
 describe('plan-implement-review: outcome records and --model-routing measured', () => {
   it('records objective results only, without task text or paths, and not with --no-record', async () => {
@@ -601,5 +604,29 @@ describe('plan-implement-review: outcome records and --model-routing measured', 
     expect(noEffort.out).toContain('gpt-a is not reported to support high now');
     const manual = await go([...ARGS(), '--dry-run', '--model-routing', 'measured', '--step-model', 'implement=gpt-a'], { outcomes: memory([...rows('gpt-a', 'low', 20, 0), ...rows('default', 'default', 5, 10)]) });
     expect(manual.out).toContain('reason: requested with --step-model implement=gpt-a');
+  });
+
+  it('compares only within a user-defined test group, tags new records with it and rejects non-neutral labels', async () => {
+    const tagged = [...rows('gpt-a', 'low', 20, 0, 'suite-a'), ...rows('default', 'default', 5, 10, 'suite-a')];
+    const plain = await go([...ARGS(), '--dry-run', '--model-routing', 'measured'], { outcomes: memory(tagged) });
+    expect(plain.out).toContain('provider default kept: not enough comparable data');
+    const grouped = await go([...ARGS(), '--dry-run', '--model-routing', 'measured', '--eval-group', 'suite-a'], { outcomes: memory(tagged) });
+    expect(grouped.out).toContain('test group "suite-a"');
+    expect(grouped.out).toContain('model: gpt-a (verified)');
+    const store = memory();
+    await go([...WRITE(), '--eval-group', 'suite-a'], { onCodex: editFile(), outcomes: store });
+    expect(store.saved.length).toBeGreaterThan(0);
+    expect(store.saved.every((r) => r.group === 'suite-a')).toBe(true);
+    for (const bad of ['', 'My Task', 'fix the login bug please']) {
+      expect(typeof parseOrchestrateArgs(['--workflow', 'plan-review', '--task', 'x', '--dry-run', '--eval-group', bad])).toBe('string');
+    }
+  });
+
+  it('shows errors and timeouts in the dry run and keeps the default when they explain the win', async () => {
+    const flaky = [...rows('gpt-a', 'low', 20, 0), ...Array.from({ length: 16 }, (_, i) => ({ ...rec('gpt-a', 'low', i % 2 === 0 ? 'timeout' : 'error'), day: SPREAD[i % 4] ?? '2026-10-20' })), ...rows('default', 'default', 5, 10)];
+    const dry = await go([...ARGS(), '--dry-run', '--model-routing', 'measured'], { outcomes: memory(flaky) });
+    expect(dry.out).toContain('8 error, 8 timeout');
+    expect(dry.out).toContain('the better pass rate comes with too many errors or timeouts');
+    expect(dry.out).not.toContain('model: gpt-a');
   });
 });

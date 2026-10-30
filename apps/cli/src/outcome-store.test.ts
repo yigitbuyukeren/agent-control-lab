@@ -1,4 +1,6 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -38,6 +40,47 @@ describe('fileOutcomeStore', () => {
   });
 });
 
+describe('concurrent writers', () => {
+  it('loses no record when many stores append at once in one process', async () => {
+    const stores = Array.from({ length: 8 }, () => fileOutcomeStore(dir));
+    await Promise.all(stores.flatMap((store, w) => Array.from({ length: 10 }, (_, i) => store.append([rec({ seconds: w * 100 + i })]))));
+    const seconds = (await fileOutcomeStore(dir).load()).map((r) => r.seconds).sort((a, b) => a - b);
+    expect(seconds).toEqual(stores.flatMap((_, w) => Array.from({ length: 10 }, (__, i) => w * 100 + i)).sort((a, b) => a - b));
+  });
+
+  it('loses no record when separate processes append at once, and leaves no lock or temp file', async () => {
+    const worker = fileURLToPath(new URL('./outcome-store.worker.ts', import.meta.url));
+    const codes = await Promise.all(
+      Array.from({ length: 5 }, (_, w) => new Promise<number | null>((resolve) => {
+        const child = spawn(process.execPath, [worker, dir, String(w), '15'], { stdio: 'ignore' });
+        child.on('exit', resolve);
+      })),
+    );
+    expect(codes).toEqual([0, 0, 0, 0, 0]);
+    const seconds = (await fileOutcomeStore(dir).load()).map((r) => r.seconds).sort((a, b) => a - b);
+    expect(seconds).toEqual(Array.from({ length: 5 }, (_, w) => Array.from({ length: 15 }, (__, i) => w * 1000 + i)).flat().sort((a, b) => a - b));
+    expect(readdirSync(dir)).toEqual([OUTCOME_FILE]);
+  }, 60_000);
+
+  it('takes over a lock left by a dead process, and gives up (without writing) on a fresh one', async () => {
+    const lock = join(dir, 'outcomes.lock');
+    mkdirSync(lock);
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    await fileOutcomeStore(dir).append([rec()]);
+    expect(await fileOutcomeStore(dir).load()).toHaveLength(1);
+    expect(existsSync(lock)).toBe(false);
+  });
+
+  it('never leaves a partial file: a failed write keeps the old content', async () => {
+    const store = fileOutcomeStore(dir);
+    await store.append([rec()]);
+    await expect(store.append([{ ...rec(), seconds: Number.NaN }])).resolves.toBeUndefined();
+    expect((await store.load()).length).toBeGreaterThanOrEqual(1);
+    expect(readdirSync(dir).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+  });
+});
+
 describe('outcomes command', () => {
   const call = async (argv: string[], withStore = true) => {
     let out = '';
@@ -52,7 +95,8 @@ describe('outcomes command', () => {
     await fileOutcomeStore(dir).append([rec(), rec({ outcome: 'fail' }), rec({ outcome: 'unmeasured' })]);
     const shown = await call(['outcomes']);
     expect(shown.out).toContain('codex implement, general task, small');
-    expect(shown.out).toContain('gpt-a / low: 1 pass, 1 fail, 0 error/timeout, 1 unmeasured');
+    expect(shown.out).toContain('gpt-a / low: 1 pass, 1 fail');
+    expect(shown.out).toContain('0 error, 0 timeout (0% of 3 runs), 1 unmeasured');
     expect(shown.out).toContain('(too few to count)');
     expect((await call(['outcomes', 'clear'])).out).toContain('deleted');
     expect(await fileOutcomeStore(dir).load()).toEqual([]);

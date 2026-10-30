@@ -21,6 +21,7 @@ export async function recordRun(
   task: string,
   requests: StepRequests,
   result: WorkflowResult,
+  group: string | undefined,
   now: Date,
 ): Promise<string> {
   if (store === undefined) return '';
@@ -31,7 +32,7 @@ export async function recordRun(
       return request === undefined ? [] : [[step, { provider, model: request.model, effort: request.effort }]];
     }),
   );
-  const records = recordsFromRun(result, { day: now.toISOString().slice(0, 10), task: classifyTask(task), size: estimateTaskSize(task), steps });
+  const records = recordsFromRun(result, { day: now.toISOString().slice(0, 10), task: classifyTask(task), size: estimateTaskSize(task), steps, ...(group === undefined ? {} : { group }) });
   if (records.length === 0) return '';
   try {
     await store.append(records);

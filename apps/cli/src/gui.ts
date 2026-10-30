@@ -3,7 +3,22 @@ import { readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { isModelRouting, isPolicyName, isWorkflowName, type WorkflowName } from '@agent-control-lab/core';
+import {
+  claudeSettingsPath,
+  decodeChain,
+  diagnoseClaudeIntegration,
+  installCollector,
+  isModelRouting,
+  isPolicyName,
+  isWorkflowName,
+  resolveCacheDir,
+  uninstallCollector,
+  type InstallResult,
+  type IntegrationDiagnosis,
+  type IntegrationPaths,
+  type UninstallResult,
+  type WorkflowName,
+} from '@agent-control-lab/core';
 import { guiPage } from './gui-page.ts';
 import { mergeLogin, parseDryRun, parseModels, parseProviderLines, parseQuota } from './gui-model.ts';
 import { RunManager, type GuiRun } from './gui-run.ts';
@@ -24,11 +39,46 @@ export interface GuiOptions {
   readonly token?: string;
   /** Clock for run timestamps; injectable for tests. */
   readonly now?: () => number;
+  /** Claude Code quota collector; absent in tests that do not need it. */
+  readonly claude?: ClaudeIntegration;
   /** Hard ceiling for a whole run in ms; defaults to the per-step timeout times the steps plus a minute. */
   readonly watchdogMs?: number;
 }
 
 export type { GuiRun } from './gui-run.ts';
+
+/** The Claude Code quota collector: read what is there, and (only on explicit request) wire it in or take it out. */
+export interface ClaudeIntegration {
+  readonly diagnose: () => Promise<IntegrationDiagnosis>;
+  readonly install: () => Promise<InstallResult>;
+  readonly uninstall: () => Promise<UninstallResult>;
+}
+
+export function fileClaudeIntegration(paths: IntegrationPaths, now: () => Date = () => new Date()): ClaudeIntegration {
+  return {
+    diagnose: () => diagnoseClaudeIntegration(paths, now()),
+    install: () => installCollector(paths, now()),
+    uninstall: () => uninstallCollector(paths),
+  };
+}
+
+/** The real paths: the user's own settings file and the existing quota cache directory. */
+export function defaultClaudePaths(binPath: string): IntegrationPaths {
+  return { settingsPath: claudeSettingsPath(), cacheDir: resolveCacheDir(), nodePath: process.execPath, binPath };
+}
+
+const planId = (command: string): string => createHash('sha256').update(command).digest('hex').slice(0, 16);
+
+/** The page never sees the raw command: a chained original is decoded for reading and masked. */
+function publicDiagnosis(d: IntegrationDiagnosis): Record<string, unknown> {
+  const { plan, ...rest } = d;
+  if (plan === undefined) return rest;
+  const display = plan.command.replace(/ --chain (\S+)/, (_m, enc: string) => {
+    const original = decodeChain(enc);
+    return original === undefined ? '' : ` --chain «${maskSecrets(original)}»`;
+  });
+  return { ...rest, plan: { action: plan.action, display, id: planId(plan.command) } };
+}
 
 type Built = { readonly argv: string[] } | { readonly error: string };
 
@@ -197,6 +247,10 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
       const quota = parseQuota(await ask(['quota']));
       const full = quota.flatMap((q) => q.windows.map((w) => ({ provider: q.provider, ...w }))).find((w) => w.usedPercent >= QUOTA_STOP_PERCENT);
       if (full !== undefined) return json(res, 409, { error: `quota is almost used up (${full.provider} ${full.label}: ${String(full.usedPercent)}%); nothing was started` });
+      const claudeNow = options.claude === undefined ? undefined : await options.claude.diagnose();
+      for (const [label, w] of [['5h window', claudeNow?.fiveHour], ['7d window', claudeNow?.sevenDay]] as const) {
+        if (w?.usedPercent !== undefined && w.usedPercent >= QUOTA_STOP_PERCENT) return json(res, 409, { error: `quota is almost used up (claude ${label}: ${String(w.usedPercent)}%); nothing was started` });
+      }
       const timeoutSec = obj(body)?.['timeoutSec'];
       const perStep = (typeof timeoutSec === 'number' ? timeoutSec : 600) * 1000;
       manager.start(toRunArgv(built.argv), [{ id: 'plan', provider: 'claude' }, { id: 'review', provider: 'codex' }], options.watchdogMs ?? perStep * 2 + 60_000);
@@ -236,6 +290,28 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
     }
     if (req.method === 'POST' && path === '/api/run/cancel') return json(res, 200, { cancelled: manager.cancel() });
     if (req.method === 'GET' && path === '/api/dirs') return listDirs(url, res);
+    if (path === '/api/claude' && req.method === 'GET') {
+      return json(res, 200, options.claude === undefined ? { unavailable: true } : publicDiagnosis(await options.claude.diagnose()));
+    }
+    if (req.method === 'POST' && (path === '/api/claude/install' || path === '/api/claude/uninstall')) {
+      const claude = options.claude;
+      const body = await readJson(req);
+      if ('error' in body) return json(res, body.status, { error: body.error });
+      const input = obj(body.value);
+      if (claude === undefined) return json(res, 400, { error: 'not available' });
+      if (input?.['confirm'] !== true) return json(res, 400, { error: 'explicit confirmation is required' });
+      return exclusive(async () => {
+        if (path === '/api/claude/install') {
+          const before = await claude.diagnose();
+          if (before.plan === undefined) return json(res, 409, { error: 'nothing can be installed', diagnosis: publicDiagnosis(before) });
+          if (input['planId'] !== planId(before.plan.command)) return json(res, 409, { error: 'the plan changed since you reviewed it; reload and review it again' });
+          const result = await claude.install();
+          return json(res, result.ok ? 200 : 409, { ...(result.ok ? {} : { error: result.reason }), result, diagnosis: publicDiagnosis(await claude.diagnose()) });
+        }
+        const result = await claude.uninstall();
+        return json(res, result.ok ? 200 : 409, { ...(result.ok ? {} : { error: result.reason }), result, diagnosis: publicDiagnosis(await claude.diagnose()) });
+      });
+    }
     if (req.method === 'GET' && path === '/api/status') {
       if (manager.active) return json(res, 409, { error: 'a run is active' });
       return exclusive(async () => {

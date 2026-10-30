@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { request, type Server } from 'node:http';
-import { buildDryRunArgv, createGuiServer, listenGui } from './gui.ts';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { writeClaudeCache } from '@agent-control-lab/core';
+import { buildDryRunArgv, createGuiServer, fileClaudeIntegration, listenGui } from './gui.ts';
 import { parseGuiArgs } from './gui-command.ts';
 
 const TOKEN = 'test-token';
@@ -269,5 +273,81 @@ describe('real plan-review run gate', () => {
     const ok = (await (await get(base, `/api/dirs?path=${encodeURIComponent(process.cwd())}`)).json()) as { path: string; dirs: string[] };
     expect(ok.path).toBe(process.cwd());
     expect(ok.dirs.every((d) => !d.startsWith('.'))).toBe(true);
+  });
+});
+
+describe('Claude quota integration endpoints', () => {
+  let root = '';
+  afterEach(async () => { await rm(root, { recursive: true, force: true }); });
+  const setup = async (settings?: unknown) => {
+    root = await mkdtemp(join(tmpdir(), 'acl gui claude '));
+    await mkdir(join(root, 'claude'));
+    const settingsPath = join(root, 'claude', 'settings.json');
+    if (settings !== undefined) await writeFile(settingsPath, JSON.stringify(settings));
+    const paths = { settingsPath, cacheDir: join(root, 'cache'), nodePath: '/usr/bin/node', binPath: '/opt/acl/bin/a.js' };
+    const server = createGuiServer({ token: TOKEN, claude: fileClaudeIntegration(paths), run: () => Promise.resolve(0) });
+    open.push(server);
+    const base = `http://127.0.0.1:${String(await listenGui(server, 0))}`;
+    const call = (path: string, body?: unknown, token = TOKEN) =>
+      fetch(`${base}${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-acl-token': token, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+    return { paths, call };
+  };
+
+  it('needs the token and reports why there is no data', async () => {
+    const { call } = await setup({ theme: 'dark' });
+    expect((await call('/api/claude', undefined, 'nope')).status).toBe(403);
+    const d = (await (await call('/api/claude')).json()) as { reason: string; plan: { action: string; id: string; display: string } };
+    expect(d.reason).toBe('not-installed');
+    expect(d.plan.action).toBe('add');
+  });
+  it('installs only with confirmation and the reviewed plan id, shows the real command masked, and undoes it', async () => {
+    const original = { type: 'command', command: './mine.sh --token sk-abcdefghijklmnopqrstu' };
+    const { paths, call } = await setup({ keep: 1, statusLine: original });
+    const d = (await (await call('/api/claude')).json()) as { plan: { action: string; id: string; display: string } };
+    expect(d.plan.action).toBe('chain');
+    expect(d.plan.display).not.toContain('sk-abcdefghijklmnopqrstu');
+    expect(d.plan.display).toContain('mine.sh');
+    expect((await call('/api/claude/install', { planId: d.plan.id })).status).toBe(400);
+    expect((await call('/api/claude/install', { confirm: true, planId: 'stale' })).status).toBe(409);
+    expect((JSON.parse(await readFile(paths.settingsPath, 'utf8')) as { statusLine: unknown }).statusLine).toEqual(original);
+    const done = await call('/api/claude/install', { confirm: true, planId: d.plan.id });
+    expect(done.status).toBe(200);
+    expect(((await done.json()) as { diagnosis: { installed: boolean; restorable: boolean } }).diagnosis).toMatchObject({ installed: true, restorable: true });
+    expect((JSON.parse(await readFile(paths.settingsPath, 'utf8')) as { keep: number }).keep).toBe(1);
+    expect((await call('/api/claude/uninstall', {})).status).toBe(400);
+    expect((await call('/api/claude/uninstall', { confirm: true })).status).toBe(200);
+    expect(JSON.parse(await readFile(paths.settingsPath, 'utf8'))).toEqual({ keep: 1, statusLine: original });
+  });
+  it('reports a refusal reason and leaves an unparsable settings file alone', async () => {
+    const { paths, call } = await setup('{ // c\n}');
+    const bad = await call('/api/claude/install', { confirm: true, planId: 'x' });
+    expect(bad.status).toBe(409);
+    expect(await readFile(paths.settingsPath, 'utf8')).toBe('{ // c\n}');
+    expect((await call('/api/claude/uninstall', { confirm: true })).status).toBe(409);
+  });
+  it('does not start a real run when fresh Claude quota is nearly used up', async () => {
+    const calls: string[][] = [];
+    root = await mkdtemp(join(tmpdir(), 'acl gui claude '));
+    const paths = { settingsPath: join(root, 's.json'), cacheDir: join(root, 'cache'), nodePath: '/n', binPath: '/a' };
+    await writeFile(paths.settingsPath, JSON.stringify({ statusLine: { type: 'command', command: '"/n" "/a" statusline-collect' } }));
+    await writeClaudeCache(paths.cacheDir, { state: 'ok', fiveHour: { windowMinutes: 300, usedPercent: 97, resetsAt: new Date(Date.now() + 3_600_000).toISOString() } }, new Date());
+    const server = createGuiServer({
+      token: TOKEN,
+      claude: fileClaudeIntegration(paths),
+      run: (argv, io) => {
+        calls.push([...argv]);
+        io.out(argv[0] === 'quota' ? 'Codex plan: plus\n  5h window (primary): 3% used\n' : 'orchestrate plan (dry run, no agent started)\n  verdict: would run\n');
+        return Promise.resolve(0);
+      },
+    });
+    open.push(server);
+    const base = `http://127.0.0.1:${String(await listenGui(server, 0))}`;
+    const send = (path: string, body: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'x-acl-token': TOKEN, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const b = { workflow: 'plan-review', task: 'do it', routing: 'auto', policy: 'balanced', steps: {}, cwd: '/tmp/proj', timeoutSec: 120 };
+    await send('/api/dry-run', b);
+    const res = await send('/api/run', { ...b, confirm: true });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('claude 5h window');
+    expect(calls.some((c) => c.includes('--confirm'))).toBe(false);
   });
 });

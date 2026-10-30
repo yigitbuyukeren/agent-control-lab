@@ -20,7 +20,7 @@ const STEPS={
  implement:{tr:'Uygulama',icon:'term',d:'Yalnızca izole çalışma ağacına yazar.',provider:()=> 'codex'},
  review:{tr:'İnceleme',icon:'shield',d:'Çıktıyı bağımsız olarak gözden geçirir.',provider:(w)=>w==='plan-review'?'codex':'claude'}};
 const PN={claude:'Claude',codex:'Codex'};
-const S={cwd:'',timeout:300,previewKey:null,run:null,runLines:[],runCursor:0,timer:null,tick:null,view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
+const S={claude:null,claudeMsg:'',cwd:'',timeout:300,previewKey:null,run:null,runLines:[],runCursor:0,timer:null,tick:null,view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
 const modelsOf=(p)=>{const g=(S.status&&S.status.models||[]).find((x)=>x.provider===p);return g?g.models:[]};
 const effortsFor=(p,id)=>{const ms=modelsOf(p);const m=ms.find((x)=>x.id===id);if(m)return m.efforts;const all=[];for(const x of ms)for(const e of x.efforts)if(!all.includes(e))all.push(e);return all};
 function toast(t){const e=h('div',{class:'toast',role:'alert'},t);document.body.append(e);setTimeout(()=>e.remove(),5000)}
@@ -56,6 +56,7 @@ function drawTop(){topTitle.textContent=TITLES[S.view];topPills.replaceChildren(
  if(runActive())topPills.append(h('span',{class:'pill'},h('span',{class:'dot warn'}),'Koşu sürüyor'));
  if(S.loading){topPills.append(h('span',{class:'pill'},h('span',{class:'skel',style:null}),'durum okunuyor…'));return}
  for(const p of(S.status&&S.status.providers)||[]){const ok=/logged in/.test(p.login||'');topPills.append(h('span',{class:'pill'},h('span',{class:'dot '+(ok?'ok':p.login?'warn':'bad')}),PN[p.id]))}
+ if(S.claude&&S.claude.fiveHour&&S.claude.fiveHour.usedPercent!=null)topPills.append(h('span',{class:'pill hideS'},'Claude 5s: %'+Math.round(S.claude.fiveHour.usedPercent)));
  for(const q of(S.status&&S.status.quota)||[]){const w=q.windows[0];if(w)topPills.append(h('span',{class:'pill hideS'},PN[q.provider]+' '+winName(w.label).split(' ')[0]+': %'+Math.round(w.usedPercent)))}}
 
 /* ---------- run view ---------- */
@@ -237,7 +238,18 @@ async function browse(path){
 window.addEventListener('beforeunload',(e)=>{if(runActive())e.preventDefault()});
 
 /* ---------- providers & safety ---------- */
-function quotaBlock(p){const q=((S.status&&S.status.quota)||[]).find((x)=>x.provider===p);
+const REASON={fresh:'Veri güncel.','no-cache-dir':'Önbellek dizini belirlenemedi (HOME/LOCALAPPDATA yok); veri saklanamaz.','settings-invalid':'Claude ayar dosyası JSON olarak okunamadı (yorum ya da sondaki virgül olabilir). Dosyaya dokunulmaz; elle düzeltin.','settings-unreadable':'Claude ayar dosyası okunamadı (izin sorunu ya da dosya çok büyük).','not-installed':'statusLine toplayıcısı kurulu değil. Claude Code kullanım sınırı verisini yalnızca statusLine komutuna verir.','other-statusline':'Başka bir statusLine komutunuz var; toplayıcı henüz bağlı değil. Kurulum onu bozmadan zincirler.','unsupported-statusline':'statusLine ayarı beklenmeyen biçimde (komut türünde değil); otomatik kurulum yapılmaz.','waiting-for-data':'Toplayıcı kurulu ama henüz veri gelmedi. Veri yalnızca açık bir Claude Code oturumu durum çubuğunu çizdiğinde ve Claude Code kullanım sınırı bilgisini gönderdiğinde yazılır. Tahmin yürütülmez.',stale:'Son veri 15 dakikadan eski; güncel sayılmaz. Açık bir Claude Code oturumu durum çubuğunu yeniledikçe güncellenir.','windows-expired':'Kayıtlı pencerelerin sıfırlanma zamanı geçti; güncel kullanım bilinmiyor.','cache-invalid':'Önbellek dosyası bozuk ya da okunamıyor; yeni veri gelince yenilenir.'};
+const SETST={missing:'ayar dosyası yok','no-statusline':'statusLine tanımlı değil',collector:'toplayıcı kurulu',chained:'toplayıcı, mevcut komutunuzla zincirli',other:'başka bir statusLine komutu',unsupported:'desteklenmeyen biçim',invalid:'okunamayan JSON',unreadable:'okunamadı'};
+const CST={fresh:'güncel',missing:'yok',stale:'eski','expired':'pencereler sıfırlanmış',invalid:'bozuk','no-dir':'dizin yok'};
+const INSTERR={invalid:'Ayar dosyası JSON olarak okunamadı; hiçbir şey değiştirilmedi.',unreadable:'Ayar dosyası okunamadı; hiçbir şey değiştirilmedi.',unsupported:'statusLine beklenmeyen biçimde; hiçbir şey değiştirilmedi.',unavailable:'Yol güvenle alıntılanamadı; hiçbir şey değiştirilmedi.','no-cache-dir':'Önbellek dizini yok.','write-failed':'Yazılamadı; ayarınız değiştirilmedi.','no-record':'Bu araçla yapılmış bir kurulum kaydı yok; geri alınacak bir şey yok.','changed-since-install':'statusLine kurulumdan sonra değişmiş; ayarınıza dokunulmadı. Elle düzenleyin.'};
+function claudeQuotaBlock(){const c=S.claude;
+ if(!c||c.unavailable)return h('p',{class:'why'},'Entegrasyon bilgisi alınamadı.');
+ const wins=[['5 saatlik pencere',c.fiveHour],['7 günlük pencere',c.sevenDay]].filter((x)=>x[1]&&x[1].usedPercent!=null);
+ if(!wins.length)return h('p',{class:'why'},'Kota verisi yok: '+(REASON[c.reason]||c.reason));
+ return h('div',{},wins.map(([name,w])=>{const bar=h('div',{});bar.style.width=Math.min(100,w.usedPercent)+'%';if(w.usedPercent>=80)bar.className='hot';
+  return h('div',{class:'qrow'},h('div',{class:'qh'},h('span',{},name),h('span',{},'%'+Math.round(w.usedPercent)+' kullanıldı')),h('div',{class:'bar'},bar),w.resetsAt?h('p',{class:'why'},'Sıfırlanma: '+rel(w.resetsAt)):null)}),
+  h('p',{class:'why'},'Son güncelleme: '+(c.cache.ageSeconds!=null?Math.max(0,Math.round(c.cache.ageSeconds/60))+' dk önce':'—')+' · kaynak: Claude Code statusLine'))}
+function quotaBlock(p){if(p==='claude')return claudeQuotaBlock();const q=((S.status&&S.status.quota)||[]).find((x)=>x.provider===p);
  if(!q||!q.windows.length)return h('p',{class:'why'},'Kota verisi yok: bu sağlayıcı için güvenilir bir okuma bulunamadı. Tahmin gösterilmez.');
  return h('div',{},q.plan?h('p',{class:'why'},'Plan: '+q.plan):null,q.windows.map((w)=>{const bar=h('div',{});bar.style.width=Math.min(100,w.usedPercent)+'%';if(w.usedPercent>=80)bar.className='hot';
   return h('div',{class:'qrow'},h('div',{class:'qh'},h('span',{},winName(w.label)),h('span',{},'%'+Math.round(w.usedPercent)+' kullanıldı')),h('div',{class:'bar'},bar),w.resets?h('p',{class:'why'},'Sıfırlanma: '+rel(w.resets)):null)}))}
@@ -251,9 +263,33 @@ function drawProviders(){
    h('div',{class:'row'},h('span',{class:'k'},'Oturum'),h('div',{class:'v'},h('span',{class:'chip '+(ok?'ok':'warn')},p.login||'bilinmiyor'))),
    h('div',{class:'row'},h('span',{class:'k'},'Model listesi'),h('div',{class:'v'},h('span',{class:'why'},g?g.source+' · '+g.models.length+' model':'yok'))),
    h('h2',{style:null},IC('gauge'),'Kota'),quotaBlock(p.id))})));
+ v.append(integrationCard());
  for(const g of(S.status&&S.status.models)||[])v.append(h('section',{class:'card'},h('h2',{},IC('layers'),PN[g.provider]+' modelleri'),h('p',{class:'hint'},g.source+(g.provider==='claude'?' — efor düzeyleri satıcı belgelerine göre, hesap için doğrulanmadı.':'')),
   h('div',{style:null,class:'tw'},h('table',{},h('thead',{},h('tr',{},h('th',{},'Model'),h('th',{},'Kimlik'),h('th',{},'Efor'),h('th',{},'Varsayılan'))),h('tbody',{},g.models.map((m)=>h('tr',{},h('td',{},m.label),h('td',{class:'m'},m.id),h('td',{},m.efforts.join(', ')),h('td',{},m.defaultEffort||'—'))))))));
  main.replaceChildren(v)}
+function integrationCard(){const c=S.claude;const card=h('section',{class:'card'},h('h2',{},IC('lock'),'Claude kota entegrasyonu'),h('p',{class:'hint'},'Yalnızca Claude Code’un resmî statusLine girdisi kullanılır: 5 saatlik/7 günlük yüzde ve sıfırlanma zamanı. Keychain, token, belgesiz API, kazıma, tahmin ve model çağrısı yok.'));
+ if(!c||c.unavailable){card.append(h('p',{class:'why'},'Bu sunucuda entegrasyon kullanılamıyor.'));return card}
+ card.append(h('div',{class:'row'},h('span',{class:'k'},'Ayar dosyası'),h('div',{class:'v'},h('code',{},c.settingsPath))),
+  h('div',{class:'row'},h('span',{class:'k'},'statusLine'),h('div',{class:'v'},h('span',{class:'chip '+(c.installed?'ok':'def')},SETST[c.settings]||c.settings))),
+  h('div',{class:'row'},h('span',{class:'k'},'Önbellek'),h('div',{class:'v'},h('span',{class:'chip '+(c.cache.state==='fresh'?'ok':c.cache.state==='missing'?'def':'warn')},CST[c.cache.state]||c.cache.state),c.cache.updatedAt?h('span',{class:'why'},' son güncelleme '+new Date(c.cache.updatedAt).toLocaleString('tr-TR')):null)),
+  h('div',{class:'row'},h('span',{class:'k'},'Durum'),h('div',{class:'v'},h('p',{class:'why',style:null},REASON[c.reason]||c.reason))));
+ const btns=h('div',{class:'dlgbtn',style:null});
+ if(c.plan)btns.append(h('button',{type:'button',class:'chipbtn',onclick:()=>{confirmInstall(c.plan)}},c.plan.action==='chain'?'Kur (mevcut komutla zincirle)…':'Kur…'));
+ if(c.restorable)btns.append(h('button',{type:'button',class:'chipbtn danger',onclick:confirmUninstall},'Geri al…'));
+ btns.append(h('button',{type:'button',class:'chipbtn',onclick:()=>{loadClaude().then(draw)}},'Yenile'));
+ card.append(btns);
+ if(c.installed&&!c.restorable)card.append(h('p',{class:'why'},'Toplayıcı sizin kurduğunuz ya da kaydı kaybolmuş bir kurulum; bu araç onu otomatik geri almaz.'));
+ if(S.claudeMsg)card.append(h('p',{class:'note'},S.claudeMsg));
+ return card}
+function askDialog(title,facts,text,consent,label,onGo){const dlg=h('dialog',{class:'dlg'});const c=h('input',{type:'checkbox',id:'ic'});
+ const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();onGo()}},h('span',{},label));c.addEventListener('change',()=>{go.disabled=!c.checked});
+ dlg.append(h('h2',{},IC('alert'),title),h('div',{class:'facts'},facts.map(([k,v])=>h('div',{},h('span',{class:'k'},k),h('code',{},v)))),h('p',{class:'why'},text),h('label',{class:'switch',for:'ic'},c,h('span',{},consent)),h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go));
+ document.body.append(dlg);dlg.addEventListener('close',()=>{dlg.remove()});dlg.showModal()}
+function confirmInstall(plan){askDialog('Kota toplayıcısını kur',[['Ayar dosyası',S.claude.settingsPath],['Eylem',plan.action==='chain'?'mevcut statusLine komutunuz zincirlenecek':'statusLine eklenecek'],['Yazılacak komut',plan.display]],
+  'Yalnızca ~/.claude ayarındaki statusLine anahtarı değişir; diğer ayarlarınız korunur (dosya 2 boşluk girintiyle yeniden yazılır). Önceki değer kaydedilir ve “Geri al” aynen geri yükler. Mevcut komutunuz varsa her çizimde önce toplayıcı çalışır, sonra sizin komutunuz aynı girdiyle çalışır ve çıktısı aynen görünür. Toplayıcı yalnızca yüzde ve sıfırlanma zamanını yerel önbelleğe yazar.',
+  'Bu değişikliği anlıyorum ve onaylıyorum.','Kur',async()=>{try{const r=await api('/api/claude/install',{method:'POST',body:JSON.stringify({confirm:true,planId:plan.id})});S.claude=r.diagnosis;S.claudeMsg=r.result.action==='unchanged'?'Zaten kurulu.':'Kuruldu. Veri, açık bir Claude Code oturumu durum çubuğunu çizdiğinde gelir.'}catch(e){S.claudeMsg='Kurulmadı: '+(INSTERR[e.message]||String(e.message||e))}loadClaude().then(draw)})}
+function confirmUninstall(){askDialog('Kurulumu geri al',[['Ayar dosyası',S.claude.settingsPath]],'statusLine, kurulumdan önceki değerine aynen döner (yoksa kaldırılır). Kurulumdan sonra siz değiştirdiyseniz ayarınıza dokunulmaz.','Geri almayı onaylıyorum.','Geri al',async()=>{try{const r=await api('/api/claude/uninstall',{method:'POST',body:JSON.stringify({confirm:true})});S.claude=r.diagnosis;S.claudeMsg='Geri alındı: statusLine önceki haline döndü.'}catch(e){S.claudeMsg='Geri alınmadı: '+(INSTERR[e.message]||String(e.message||e))}loadClaude().then(draw)})}
+async function loadClaude(){try{S.claude=await api('/api/claude')}catch(e){S.claude=null}}
 function drawSafety(){
  const li=(t)=>h('li',{},t);
  main.replaceChildren(h('div',{class:'view stack'},h('section',{class:'card'},h('h2',{},IC('lock'),'Bu arayüz neyi yapar, neyi yapmaz'),
@@ -279,6 +315,7 @@ function draw(){
  else if(S.view==='providers')drawProviders();else drawSafety()}
 async function loadStatus(){S.loading=true;refreshBtn.classList.add('spin');draw();
  try{S.status=await api('/api/status')}catch(e){toast('Durum okunamadı: '+String(e.message||e))}
+ await loadClaude();
  S.loading=false;refreshBtn.classList.remove('spin');draw()}
 buildRun();draw();loadStatus();
 })();

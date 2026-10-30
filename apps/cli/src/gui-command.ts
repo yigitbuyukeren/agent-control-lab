@@ -1,4 +1,6 @@
-import { createGuiServer, GUI_DEFAULT_PORT, listenGui, type GuiRun } from './gui.ts';
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { createGuiServer, defaultClaudePaths, fileClaudeIntegration, GUI_DEFAULT_PORT, listenGui, type GuiRun } from './gui.ts';
 import type { Io } from './main.ts';
 
 export const GUI_USAGE = 'usage: gui [--port <1..65535, default 4173>]  (local dry-run preview, loopback only; starts nothing, writes nothing)\n';
@@ -17,7 +19,7 @@ export async function startGui(args: readonly string[], io: Io, deps: { readonly
     io.error(port);
     return 2;
   }
-  const server = createGuiServer({ run: deps.run });
+  const server = createGuiServer({ run: deps.run, claude: fileClaudeIntegration(defaultClaudePaths(realpathSync(fileURLToPath(new URL('../bin/agent-control-lab.js', import.meta.url))))) });
   let bound: number;
   try {
     bound = await listenGui(server, port);

@@ -29,6 +29,7 @@ import {
   readClaudeCache,
   readCodexQuota,
   resolveCacheDir,
+  decodeChain,
   writeClaudeCache,
   type AuthStatus,
   type ClaudeQuotaStatus,
@@ -52,6 +53,7 @@ import {
 import { VERSION } from '@agent-control-lab/shared';
 import { describeClaudeFacts } from './claude-facts.ts';
 import { REFUSALS, CLAUDE_REFUSALS, describeIssue, describePinned } from './format.ts';
+import { runChained } from './statusline-chain.ts';
 import { runPlanImplementReviewCommand } from './orchestrate-write.ts';
 import { formatOutcomes } from './format.ts';
 import { parseOrchestrateArgs, runOrchestrateCommand, usedModelLine } from './orchestrate.ts';
@@ -532,17 +534,31 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       return 0;
     }
     case 'statusline-collect': {
-      // Silent on stdout: the statusLine command's output would otherwise become the status text.
-      const status = parseClaudeStatusLine(await (deps.readStdin ?? readProcessStdin)());
-      const dir = deps.cacheDir ?? resolveCacheDir();
-      if (status.state !== 'ok' || dir === undefined) return 0;
-      try {
-        await writeClaudeCache(dir, status, (deps.now ?? (() => new Date()))());
-      } catch {
-        io.error('could not write the quota cache\n');
-        return 1;
+      // Silent on stdout unless chained: the statusLine command's output would otherwise become the status text.
+      const input = await (deps.readStdin ?? readProcessStdin)();
+      const chainAt = argv.indexOf('--chain');
+      const chained = chainAt === -1 ? undefined : decodeChain(argv[chainAt + 1]);
+      if (chainAt !== -1 && chained === undefined) {
+        io.error('statusline-collect: --chain needs the encoded original statusLine command\n');
+        return 2;
       }
-      return 0;
+      const status = parseClaudeStatusLine(input);
+      const dir = deps.cacheDir ?? resolveCacheDir();
+      let failed = false;
+      if (status.state === 'ok' && dir !== undefined) {
+        try {
+          await writeClaudeCache(dir, status, (deps.now ?? (() => new Date()))());
+        } catch {
+          failed = true;
+          io.error('could not write the quota cache\n');
+        }
+      }
+      if (chained === undefined) return failed ? 1 : 0;
+      // The user's own status line must keep working whatever happens to the cache.
+      const result = await runChained(chained, input);
+      if (result.stdout !== '') io.out(result.stdout);
+      if (result.stderr !== '') io.error(result.stderr);
+      return result.code;
     }
     case 'route': {
       const args = parseRouteArgs(argv.slice(1));

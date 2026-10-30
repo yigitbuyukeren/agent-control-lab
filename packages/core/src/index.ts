@@ -61,3 +61,4 @@ export * from './git-state.ts';
 export * from './workspace-policy.ts';
 export * from './workspace-guard.ts';
 export * from './verify.ts';
+export * from './claude-integration.ts';

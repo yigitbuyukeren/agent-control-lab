@@ -324,3 +324,9 @@ How the intent-based choice is made (all heuristics are labelled as such in the 
   always win, and ultracode is never selected.
 - The documentation pages state no date; the guide records when they were read (2026-10-31). Vendor descriptions are
   marketing-adjacent intent, not proof of performance on your task; that is why this basis carries medium uncertainty at best.
+
+## Local GUI (v0.1, dry-run preview only)
+
+`pnpm cli gui [--port <n>]` (default 4173) serves a dark single page at `http://127.0.0.1:<port>/`. It lets you enter a task, pick the workflow, `--model-routing` (auto, adaptive, measured, research, guided) and `--policy` (economy, balanced, quality), optionally set per-step model/effort, and shows the output of the real `orchestrate --dry-run`, split per step (selected model, effort, verification, routing basis, evidence, uncertainty).
+
+Safety: it listens on the loopback interface only; every call must carry the random per-start token and a matching Host/Origin; the server builds the argument vector itself, always with `--dry-run --no-record` and never a confirm flag, so no agent is started and no file is written; the page has no external resources, a strict CSP and uses no browser storage; tasks and results are not stored or logged. `plan-implement-review` needs an existing worktree path (checked, not written to); a verify command is only displayed, never run.

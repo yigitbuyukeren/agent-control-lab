@@ -14,7 +14,16 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   });
 }
 
-process.exitCode = await run(
+if (process.argv[2] === 'gui') {
+  const { startGui } = await import('../src/gui-command.ts');
+  process.exitCode = await startGui(process.argv.slice(3), {
+    out: (text) => process.stdout.write(text),
+    error: (text) => process.stderr.write(text),
+  }, {
+    signal: controller.signal,
+    run: (argv, io) => run(argv, io, { signal: controller.signal, ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }) }),
+  });
+} else process.exitCode = await run(
   process.argv.slice(2),
   {
     out: (text) => process.stdout.write(text),

@@ -88,6 +88,7 @@ Commands:
   route --dry-run --task <kind> [--prefer claude|codex|auto] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode]
                         Recommend a provider (no agent is started)
   statusline-collect    Store 5h/7d limits from statusLine JSON on stdin (opt-in, see docs/STATUSLINE.md)
+  gui [--port <n>]      Local dark-mode dry-run preview in the browser (loopback only; starts no agent, writes nothing)
   auth-status Show provider login state and method (local status commands only)
 `;
 

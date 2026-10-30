@@ -85,3 +85,67 @@ describe('RunManager', () => {
     expect(JSON.stringify(crashed.snapshot())).not.toContain('boom');
   });
 });
+
+describe('RunManager log overflow', () => {
+  const steps = [{ id: 'plan', provider: 'claude' }, { id: 'review', provider: 'codex' }];
+  const hold = () => {
+    const held: { io?: { error: (t: string) => void }; settle?: (code: number) => void } = {};
+    const run: GuiRun = (_a, io, signal) => new Promise((resolve) => {
+      held.io = io;
+      held.settle = resolve;
+      signal?.addEventListener('abort', () => { resolve(130); });
+    });
+    return { held, run };
+  };
+  const lines = (from: number, n: number): string => Array.from({ length: n }, (_, i) => `line ${String(from + i)}\n`).join('');
+
+  it('keeps the cursor moving past the 400 line limit with bounded memory, and says what was skipped', async () => {
+    const { held, run } = hold();
+    const m = new RunManager({ run, now: () => 1, hide: [] });
+    m.start(['x'], steps, 5000);
+    held.io?.error(lines(0, 500));
+    const first = m.snapshot(0);
+    expect(first?.lines).toHaveLength(400);
+    expect(first?.lines[0]).toBe('line 100');
+    expect(first?.next).toBe(500);
+    expect(first?.skipped).toBe(100);
+    expect(m.snapshot(500)?.lines).toEqual([]);
+    held.io?.error(lines(500, 10));
+    const more = m.snapshot(500);
+    expect(more?.lines).toHaveLength(10);
+    expect(more?.lines[0]).toBe('line 500');
+    expect(more?.next).toBe(510);
+    expect(more?.skipped).toBeUndefined();
+    // a client that fell far behind jumps forward instead of sticking
+    held.io?.error(lines(510, 1000));
+    const behind = m.snapshot(510);
+    expect(behind?.skipped).toBe(1510 - 400 - 510);
+    expect(behind?.next).toBe(1510);
+    expect(behind?.lines).toHaveLength(400);
+    // junk cursors cannot read outside the buffer
+    expect(m.snapshot(1e9)?.lines).toEqual([]);
+    expect(m.snapshot(-5)?.next).toBe(1510);
+    await m.shutdown();
+  });
+
+  it('still cancels and finishes cleanly after an overflow', async () => {
+    const { held, run } = hold();
+    const m = new RunManager({ run, now: () => 1, hide: [] });
+    m.start(['x'], steps, 5000);
+    held.io?.error(lines(0, 900));
+    expect(m.cancel()).toBe(true);
+    await m.shutdown();
+    const snap = m.snapshot(0);
+    expect(snap?.status).toBe('cancelled');
+    expect(snap?.lines.length).toBeLessThanOrEqual(400);
+    expect(snap?.next).toBe(900);
+  });
+
+  it('counts the internal-error line in the same stream', async () => {
+    const m = new RunManager({ run: () => Promise.reject(new Error('x')), now: () => 1, hide: [] });
+    m.start(['x'], steps, 5000);
+    await m.shutdown();
+    expect(m.snapshot(0)?.lines).toEqual(['internal error: the run stopped unexpectedly']);
+    expect(m.snapshot(1)?.next).toBe(1);
+  });
+});

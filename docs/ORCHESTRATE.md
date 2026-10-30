@@ -331,7 +331,7 @@ How the intent-based choice is made (all heuristics are labelled as such in the 
 
 Results are cards per step built from the real `orchestrate --dry-run` output: selected model and effort with their verified/default state, verification, basis, uncertainty, and an expandable evidence panel that keeps strict benchmark evidence apart from documentation-based reading. The raw CLI text is kept in a collapsed details section. Quota comes only from the local `quota` command; where none is available (Claude today) the page says so and shows nothing made up.
 
-Safety is unchanged from v0.1: loopback only; per-start random token plus Host/Origin checks on every API call; the server builds the argument vector itself, always with `--dry-run --no-record` and never a confirm flag (`--accept-unverified` is only added when you tick the preview option); `/api/status` runs only the read-only `providers`, `auth-status`, `quota` and `models` commands; no external resources, strict CSP, no browser storage, nothing stored or logged.
+Safety is unchanged from v0.1: loopback only; per-start random token plus Host/Origin checks on every API call; the server builds the argument vector itself, always with `--dry-run --no-record` and never a confirm flag (`--accept-unverified` is only added when you tick its option, and for a real run it needs its own second confirmation (the server refuses the run otherwise)); `/api/status` runs only the read-only `providers`, `auth-status`, `quota` and `models` commands; no external resources, strict CSP, no browser storage, nothing stored or logged.
 
 ### Real `plan-review` run (v0.3)
 
@@ -342,3 +342,7 @@ Gates, all enforced by the server and not only by the page: a project directory 
 Cancel/stop aborts the run's signal, which makes the existing orchestration stop its child processes; the page shows `cancelling` until it has actually settled. Closing the GUI server with Ctrl+C does the same and waits. Preflight refusals (proxy/TLS variables, login, policy) are shown verbatim as a refusal with no step started; nothing is skipped automatically. There is no retry, provider fallback, API-key use, commit or push, and runs use `--no-record`.
 
 The log and output shown are masked first (API keys, tokens, Bearer headers, passwords, URL credentials, private keys, the GUI's own token). This is best-effort pattern masking, not a guarantee. Model output is shown as text only and labelled untrusted. Only the last run's masked log is kept, in server memory. There is no token streaming: the CLI returns each step's answer when the step ends, so live progress is the step status lines and the answers appear as steps finish.
+
+`--accept-unverified` in the GUI is your explicit choice and it is passed to the real run too, not only to the preview: the option text says so, the confirmation dialog shows it as accepted and needs a separate checkbox, and the server rejects a real run that lacks `confirmAcceptUnverified`. Nothing sets it automatically, and a refused preflight is never retried with it.
+
+The live log keeps the newest 400 masked lines. The cursor is an absolute line count, so polling continues after the limit; a client that fell behind gets the newest lines plus how many were skipped. The page keeps at most 400 lines as well.

@@ -207,6 +207,33 @@ describe('real plan-review run gate', () => {
     expect((await api('/api/run', body({ confirm: true }))).status).toBe(409); // preview was used up
   });
 
+  it('applies --accept-unverified to the real run only with its own explicit confirmation, without consuming the preview', async () => {
+    const calls: string[][] = [];
+    const base = await boot(fake(calls));
+    const api = (path: string, b: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, body: JSON.stringify(b) });
+    const b = body({ acceptUnverified: true });
+    expect((await api('/api/dry-run', b)).status).toBe(200);
+    expect(calls.find((c) => c.includes('--dry-run'))).toContain('--accept-unverified');
+    const refused = await api('/api/run', { ...b, confirm: true });
+    expect(refused.status).toBe(400);
+    expect(((await refused.json()) as { error: string }).error).toContain('--accept-unverified');
+    expect((await api('/api/run', { ...b, confirm: true, confirmAcceptUnverified: false })).status).toBe(400);
+    expect(calls.some((c) => c.includes('--confirm'))).toBe(false);
+    expect((await api('/api/run', { ...b, confirm: true, confirmAcceptUnverified: true })).status).toBe(202); // the same preview still counts
+    await settle(base);
+    expect(calls.find((c) => c.includes('--confirm'))).toContain('--accept-unverified');
+  });
+
+  it('a run without --accept-unverified never carries it, whatever else is sent', async () => {
+    const calls: string[][] = [];
+    const base = await boot(fake(calls));
+    const api = (path: string, b: unknown) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, body: JSON.stringify(b) });
+    await api('/api/dry-run', body());
+    expect((await api('/api/run', body({ confirm: true, confirmAcceptUnverified: true }))).status).toBe(202);
+    await settle(base);
+    expect(calls.find((c) => c.includes('--confirm'))).not.toContain('--accept-unverified');
+  });
+
   it('allows one run at a time, blocks previews meanwhile, and cancels', async () => {
     const calls: string[][] = [];
     const base = await boot(fake(calls, { hang: true }));

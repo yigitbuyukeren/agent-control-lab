@@ -182,6 +182,9 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
     if (obj(body)?.['workflow'] !== 'plan-review') return json(res, 400, { error: 'only plan-review can run for real; plan-implement-review is preview only' });
     const built = buildDryRunArgv(body);
     if ('error' in built) return json(res, 400, { error: built.error });
+    if (obj(body)?.['acceptUnverified'] === true && obj(body)?.['confirmAcceptUnverified'] !== true) {
+      return json(res, 400, { error: '--accept-unverified also applies to the real run: it needs its own explicit confirmation' });
+    }
     const cwd = obj(body)?.['cwd'];
     if (typeof cwd !== 'string' || cwd === '') return json(res, 400, { error: 'choose a project directory' });
     if (manager.active) return json(res, 409, { error: 'a run is already active' });

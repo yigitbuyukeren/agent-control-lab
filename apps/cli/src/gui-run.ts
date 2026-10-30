@@ -28,7 +28,10 @@ export interface RunSnapshot {
   readonly exitCode?: number;
   readonly steps: readonly RunStep[];
   readonly lines: readonly string[];
+  /** Absolute index of the next line to ask for (`from`); it keeps growing even when old lines are dropped. */
   readonly next: number;
+  /** Lines between the requested cursor and the oldest line still kept: dropped for memory, so the stream is never stuck. */
+  readonly skipped?: number;
   readonly sections?: readonly RunSection[];
   readonly summary?: string;
   readonly refusal?: readonly string[];
@@ -90,6 +93,8 @@ export class RunManager {
   private exitCode: number | undefined;
   private steps: RunStep[] = [];
   private lines: string[] = [];
+  /** Total lines ever added; `lines` holds only the newest MAX_LINES of them. */
+  private seq = 0;
   private partial = '';
   private out = '';
   private errText = '';
@@ -114,6 +119,7 @@ export class RunManager {
     this.exitCode = undefined;
     this.steps = steps.map((s) => ({ ...s, status: 'pending' as const }));
     this.lines = [];
+    this.seq = 0;
     this.partial = '';
     this.out = '';
     this.errText = '';
@@ -147,14 +153,18 @@ export class RunManager {
 
   snapshot(from = 0): RunSnapshot | undefined {
     if (this.status === undefined) return undefined;
-    const start = Math.max(0, Math.min(from, this.lines.length));
+    const first = this.seq - this.lines.length;
+    const asked = Number.isInteger(from) && from >= 0 ? Math.min(from, this.seq) : 0;
+    const start = Math.max(asked, first);
+    const skipped = start - asked;
     return {
       id: String(this.id),
       status: this.status,
       startedAt: this.startedAt,
       steps: this.steps,
-      lines: this.lines.slice(start),
-      next: this.lines.length,
+      lines: this.lines.slice(start - first),
+      next: this.seq,
+      ...(skipped > 0 ? { skipped } : {}),
       ...(this.endedAt === undefined ? {} : { endedAt: this.endedAt }),
       ...(this.exitCode === undefined ? {} : { exitCode: this.exitCode }),
       ...(this.sections === undefined ? {} : { sections: this.sections }),
@@ -174,11 +184,16 @@ export class RunManager {
     for (const raw of parts) this.addLine(raw);
   }
 
+  private push(line: string): void {
+    this.lines.push(line);
+    this.seq += 1;
+    if (this.lines.length > MAX_LINES) this.lines.splice(0, this.lines.length - MAX_LINES);
+  }
+
   private addLine(raw: string): void {
     const line = this.mask(raw).slice(0, MAX_LINE_CHARS);
     if (line.trim() === '') return;
-    this.lines.push(line);
-    if (this.lines.length > MAX_LINES) this.lines.splice(0, this.lines.length - MAX_LINES);
+    this.push(line);
     const m = PROGRESS.exec(line);
     if (m === null) return;
     const [, , , id, provider, state, secs, err] = m;
@@ -198,7 +213,7 @@ export class RunManager {
     const refused = /orchestrate refused/.test(this.errText);
     this.status = crashed ? 'failed' : this.timedOut ? 'timeout' : code === 0 ? 'completed' : code === 130 ? 'cancelled' : refused ? 'refused' : 'failed';
     if (this.status === 'refused') this.refusal = this.mask(this.errText).split('\n').filter((l) => l.trim() !== '').slice(0, 30);
-    if (crashed) this.lines.push('internal error: the run stopped unexpectedly');
+    if (crashed) this.push('internal error: the run stopped unexpectedly');
     const parsed = parseRunOutput(this.mask(this.out));
     this.sections = parsed.sections;
     if (parsed.summary !== undefined) this.summary = parsed.summary;

@@ -91,7 +91,7 @@ function buildRun(){
    h('section',{class:'card lockable'},h('h2',{},IC('spark'),'Model yönlendirme'),h('p',{class:'hint'},'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez.'),R.routes),
    h('section',{class:'card lockable'},h('h2',{},IC('gauge'),'Politika'),R.polHint,R.pol),
    R.wsBox,R.cwdBox,
-   h('section',{class:'card lockable'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul ederek önizle ',h('code',{},'--accept-unverified'),'. Yalnızca önizlemeyi etkiler.'))),
+   h('section',{class:'card lockable'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul et ',h('code',{},'--accept-unverified'),'. Önizlemeye, gerçek çalıştırmayı ayrıca onaylarsanız ona da aktarılır. Proxy veya ön kontrol reddi kendiliğinden atlanmaz; bu bayrak yalnızca sizin açık tercihinizdir.'))),
    R.go,R.runBtn,R.runNote)));
  main.append(R.view)}
 function drawControls(){
@@ -203,10 +203,10 @@ function drawRun(){const r=S.run;R.runOut.replaceChildren();setLocked(runActive(
   if(r.summary)R.runOut.append(h('p',{class:'note'},'Özet: '+r.summary))}}
 function startTick(){clearInterval(S.tick);S.tick=setInterval(()=>{const e=document.getElementById('elapsed');if(e)e.textContent=elapsed();if(!runActive())clearInterval(S.tick)},1000)}
 async function poll(){clearTimeout(S.timer);
- try{const r=await api('/api/run?from='+S.runCursor);if(r.status==='idle')S.run=null;else{S.runCursor=r.next;S.runLines.push(...r.lines);S.run=r}}catch(e){toast(String(e.message||e))}
+ try{const r=await api('/api/run?from='+S.runCursor);if(r.status==='idle')S.run=null;else{S.runCursor=r.next;if(r.skipped)S.runLines.push('… '+r.skipped+' satır kayıt sınırı nedeniyle atlandı');S.runLines.push(...r.lines);if(S.runLines.length>400)S.runLines.splice(0,S.runLines.length-400);S.run=r}}catch(e){toast(String(e.message||e))}
  drawRun();
  if(runActive())S.timer=setTimeout(poll,700);else{clearInterval(S.tick);loadStatus()}}
-async function startRun(){const b=bodyNow();b.confirm=true;
+async function startRun(acceptConfirmed){const b=bodyNow();b.confirm=true;if(S.accept)b.confirmAcceptUnverified=acceptConfirmed===true;
  S.previewKey=null;
  try{S.run=await api('/api/run',{method:'POST',body:JSON.stringify(b)});S.runLines=[];S.runCursor=S.run.next||0;S.runLines.push(...(S.run.lines||[]));drawRun();startTick();S.timer=setTimeout(poll,500);R.runOut.scrollIntoView({behavior:'smooth',block:'nearest'})}
  catch(e){toast(String(e.message||e))}}
@@ -215,14 +215,14 @@ function confirmRun(){if(!S.result)return;const v=S.result.view;const dlg=h('dia
  const stp=(id)=>{const s=v.steps.find((x)=>x.id===id);return s?(s.model?s.model.value:'?')+' · efor: '+(s.effort?s.effort.value:'?'):'?'};
  const q=((S.status&&S.status.quota)||[]).map((x)=>PN[x.provider]+': '+x.windows.map((w)=>winName(w.label)+' %'+Math.round(w.usedPercent)).join(', ')).join(' | ')||'okunamadı (tahmin gösterilmez)';
  const c1=h('input',{type:'checkbox',id:'c1'}),c2=S.accept?h('input',{type:'checkbox',id:'c2'}):null;
- const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();startRun()}},IC('play'),h('span',{},'Gerçek çalıştırmayı başlat'));
+ const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();startRun(!!c2&&c2.checked)}},IC('play'),h('span',{},'Gerçek çalıştırmayı başlat'));
  const upd=()=>{go.disabled=!(c1.checked&&(!c2||c2.checked))};c1.addEventListener('change',upd);if(c2)c2.addEventListener('change',upd);
  dlg.append(h('h2',{id:'dlgt'},IC('alert'),'Gerçek çalıştırmayı onayla'),
   h('div',{class:'facts'},h('div',{},h('span',{class:'k'},'Proje dizini'),h('code',{},R.cwd.value.trim())),h('div',{},h('span',{class:'k'},'Plan (Claude)'),h('code',{},stp('plan'))),h('div',{},h('span',{class:'k'},'İnceleme (Codex)'),h('code',{},stp('review'))),
-   h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q))),
+   h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q)),S.accept?h('div',{},h('span',{class:'k'},'Doğrulanamayan ayarlar'),h('code',{},'KABUL EDİLDİ (--accept-unverified) — gerçek koşuya aktarılır')):null),
   h('p',{class:'why'},'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Claude araçsız planlar, Codex salt okunur inceler; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
   h('label',{class:'switch',for:'c1'},c1,h('span',{},'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
-  c2?h('label',{class:'switch',for:'c2'},c2,h('span',{},'Doğrulanamayan ayarları (örn. proxy/ortam) kendim kabul ediyorum; bu seçim önizlemeyle aynıdır.')):null,
+  c2?h('label',{class:'switch',for:'c2'},c2,h('span',{},'Doğrulanamayan ayarları (örn. proxy/TLS değişkenlerinin Claude’a iletilmemesi) gerçek çalıştırma için de kendim kabul ediyorum: --accept-unverified bu koşuya aktarılacak ve o ön kontrol uyarıları aşılacak.')):null,
   h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go));
  document.body.append(dlg);dlg.addEventListener('close',()=>{dlg.remove()});dlg.showModal()}
 async function browse(path){

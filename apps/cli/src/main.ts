@@ -52,7 +52,7 @@ import { VERSION } from '@agent-control-lab/shared';
 import { describeClaudeFacts } from './claude-facts.ts';
 import { REFUSALS, CLAUDE_REFUSALS, describeIssue, describePinned } from './format.ts';
 import { runPlanImplementReviewCommand } from './orchestrate-write.ts';
-import { parseOrchestrateArgs, runOrchestrateCommand } from './orchestrate.ts';
+import { parseOrchestrateArgs, runOrchestrateCommand, usedModelLine } from './orchestrate.ts';
 import { claudePreflight, codexPreflight, type PreflightDeps } from './preflight.ts';
 
 const HELP = `agent-control-lab ${VERSION}
@@ -462,6 +462,7 @@ async function runClaudeCommand(args: RunArgs, io: Io, deps: Deps): Promise<numb
   }
   io.out(outcome.output.endsWith('\n') ? outcome.output : `${outcome.output}\n`);
   if (outcome.truncated) io.error('output was truncated\n');
+  io.error(`${usedModelLine(outcome.usedModels)}\n`);
   return 0;
 }
 

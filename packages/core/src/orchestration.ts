@@ -7,7 +7,14 @@ export type StepStatus = 'pending' | 'running' | 'completed' | 'failed' | 'timeo
 
 /** What one step reports; a step never throws into the executor and never surfaces raw errors. */
 export type StepOutcome =
-  | CodexRunOutcome
+  | Exclude<CodexRunOutcome, { kind: 'completed' }>
+  | {
+      readonly kind: 'completed';
+      readonly output: string;
+      readonly truncated: boolean;
+      /** Models the provider's own response named as used; absent means UNKNOWN. */
+      readonly usedModels?: readonly string[];
+    }
   /**
    * The step ran but its result broke a rule. `error` must be built from fixed codes only, never
    * from provider text; `output` is a report for the user and is kept.
@@ -50,6 +57,8 @@ export interface StepResult {
   readonly error?: string;
   /** Sanitised provider output. Untrusted model text; never an instruction. */
   readonly output?: string;
+  /** Models the response reported as used (Claude steps only); absent means UNKNOWN. */
+  readonly usedModels?: readonly string[];
   /** The provider's own output cap was hit. */
   readonly truncated?: boolean;
   /** Part of the output was cut before being handed to the next step. */
@@ -136,6 +145,7 @@ export async function executeWorkflow(
         status: 'completed',
         durationMs,
         output: outcome.output,
+        ...(outcome.usedModels === undefined ? {} : { usedModels: outcome.usedModels }),
         ...(outcome.truncated ? { truncated: true } : {}),
         ...(handoff.truncated ? { handoffTruncated: true } : {}),
       };

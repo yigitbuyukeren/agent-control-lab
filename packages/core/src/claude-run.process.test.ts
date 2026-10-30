@@ -22,7 +22,7 @@ process.stdin.on('end', () => {
     return;
   }
   const leaked = Object.keys(process.env).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_|OPENAI_)/i.test(k) && k !== 'CLAUDE_CONFIG_DIR');
-  console.log(JSON.stringify({ args: process.argv.slice(2), stdin, cwd: process.cwd(), leaked }));
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'S', modelUsage: { 'claude-fake-1': {} }, result: JSON.stringify({ args: process.argv.slice(2), stdin, cwd: process.cwd(), leaked }) }));
   process.exit(0);
 });
 setInterval(() => {}, 1000);
@@ -66,7 +66,7 @@ describe('runClaude through a real fake claude (cmd shim on Windows)', () => {
     const seen = JSON.parse(outcome.output) as { args: string[]; stdin: string; cwd: string; leaked: string[] };
     expect(seen.args).toEqual([
       '-p', '--tools', '', '--strict-mcp-config', '--restricted', '--safe-mode', '--disable-slash-commands', '--no-session-persistence',
-      '--permission-prompts', 'none', '--output-format', 'text', '--model', 'claude-opus-5-5', '--effort', 'high',
+      '--permission-prompts', 'none', '--output-format', 'json', '--model', 'claude-opus-5-5', '--effort', 'high',
     ]);
     expect(seen.stdin).toBe('say hi & "quote"');
     expect(realpathSync(seen.cwd)).toBe(work);

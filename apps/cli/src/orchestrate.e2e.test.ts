@@ -27,7 +27,7 @@ process.stdin.on('end', () => {
   if (mode.claude === 'fail') process.exit(1);
   const at = args.indexOf('--model');
   if (mode.knownModels && at !== -1 && !mode.knownModels.includes(args[at + 1])) { console.error('unknown model'); process.exit(1); }
-  console.log(mode.plan);
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'S', modelUsage: { 'claude-fake-1': {} }, result: mode.plan }));
 });
 `;
 

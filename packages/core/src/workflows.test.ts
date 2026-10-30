@@ -11,6 +11,11 @@ const codexSelection = resolveSelection('codex', DEFAULT_REQUEST, { claude: clau
 
 const reply = (stdout: string): ProcessOutcome => ({ kind: 'completed', exitCode: 0, stdout, truncated: false });
 
+const asClaude = (o: ProcessOutcome): ProcessOutcome =>
+  o.kind === 'completed' && o.exitCode === 0 && !o.truncated
+    ? { ...o, stdout: JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: o.stdout, modelUsage: { 'claude-test-1': {} } }) }
+    : o;
+
 function build(outcomes: ProcessOutcome[], task = 'add a --json flag') {
   const specs: ProcessSpec[] = [];
   const steps = planReviewSteps({
@@ -23,7 +28,8 @@ function build(outcomes: ProcessOutcome[], task = 'add a --json flag') {
     env: { PATH: '/bin', OPENAI_API_KEY: 'sk-secret', ANTHROPIC_API_KEY: 'sk-ant-secret', HTTPS_PROXY: 'http://p' },
     runner: (spec) => {
       specs.push(spec);
-      return Promise.resolve(outcomes[specs.length - 1] ?? { kind: 'spawn-failed' });
+      const o = outcomes[specs.length - 1] ?? { kind: 'spawn-failed' };
+      return Promise.resolve(spec.command === 'claude' ? asClaude(o) : o);
     },
   });
   return { steps, specs };
@@ -106,7 +112,8 @@ describe('plan-implement-review workflow', () => {
       env: { PATH: '/bin', OPENAI_API_KEY: 'sk' },
       runner: (spec) => {
         specs.push(spec);
-        return Promise.resolve(outcomes[specs.length - 1] ?? { kind: 'spawn-failed' });
+        const o = outcomes[specs.length - 1] ?? { kind: 'spawn-failed' };
+      return Promise.resolve(spec.command === 'claude' ? asClaude(o) : o);
       },
       inspect: () => {
         inspected += 1;

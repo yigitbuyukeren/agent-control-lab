@@ -3,6 +3,7 @@ import { sanitize, validateTask, MAX_RUN_OUTPUT_BYTES, MAX_RUN_TIMEOUT_MS, type 
 import { runProcess, type ProcessRunner } from './process-runner.ts';
 import type { SettingsFinding, SettingsScan } from './claude-settings.ts';
 import type { Selection, SelectionIssue } from './selection.ts';
+import { isModelId } from './step-selection.ts';
 
 /** Lowest Claude Code version verified to accept `--effort ultracode` without a warning. */
 export const MIN_ULTRACODE_VERSION = '2.1.312';
@@ -59,7 +60,7 @@ export function buildClaudePrintArgs(selection: Selection): string[] {
     '--permission-prompts',
     'none',
     '--output-format',
-    'text',
+    'json',
     ...(selection.model.kind === 'explicit' ? ['--model', selection.model.value] : []),
     ...(selection.mode === 'ultracode'
       ? ['--effort', 'ultracode']
@@ -161,7 +162,38 @@ export function planClaudeRun(input: {
   return { ok: true, warnings: selection.issues };
 }
 
-export type ClaudeRunOutcome = CodexRunOutcome;
+/** Models the response itself reports as used; `undefined` means UNKNOWN (never guessed from the request). */
+export type ClaudeRunOutcome =
+  | Exclude<CodexRunOutcome, { kind: 'completed' }>
+  | { readonly kind: 'completed'; readonly output: string; readonly truncated: boolean; readonly usedModels?: readonly string[] };
+
+const MAX_USED_MODELS = 8;
+
+/**
+ * Reads `--output-format json`. Only the answer text and the keys of `modelUsage` are kept; the session id,
+ * token counts, cost and every other field are dropped on the spot and never logged or stored. Anything that
+ * is not a successful result object with a string `result` is `undefined` (the run then counts as failed and
+ * no raw text is surfaced).
+ */
+export function parseClaudeJson(stdout: string): { text: string; usedModels: readonly string[] | undefined } | undefined {
+  let data: unknown;
+  try {
+    data = JSON.parse(stdout);
+  } catch {
+    return undefined;
+  }
+  const record = (v: unknown): Record<string, unknown> | undefined =>
+    typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+  const result = Array.isArray(data) ? record([...(data as unknown[])].reverse().find((e) => record(e)?.['type'] === 'result')) : record(data);
+  if (result === undefined || result['type'] !== 'result' || result['is_error'] === true) return undefined;
+  if (result['subtype'] !== undefined && result['subtype'] !== 'success') return undefined;
+  const text = result['result'];
+  if (typeof text !== 'string') return undefined;
+  const usage = record(result['modelUsage']);
+  const models = usage === undefined ? [] : Object.keys(usage).filter(isModelId);
+  const usedModels = usage === undefined || models.length === 0 || models.length > MAX_USED_MODELS || models.length !== Object.keys(usage).length ? undefined : models;
+  return { text, usedModels };
+}
 
 export interface ClaudeRunRequest {
   readonly task: string;
@@ -178,6 +210,9 @@ export interface ClaudeRunDeps {
   readonly platform?: NodeJS.Platform;
 }
 
+/** Room for the JSON envelope around an answer of up to `MAX_RUN_OUTPUT_BYTES`. */
+const JSON_ENVELOPE_BYTES = 16 * 1024;
+
 /** Runs a tool-less `claude -p` in a cleaned environment. Failure output is never surfaced. */
 export async function runClaude(request: ClaudeRunRequest, deps: ClaudeRunDeps = {}): Promise<ClaudeRunOutcome> {
   const runner = deps.runner ?? runProcess;
@@ -188,15 +223,24 @@ export async function runClaude(request: ClaudeRunRequest, deps: ClaudeRunDeps =
     env: claudeRunEnv(deps.env ?? process.env),
     input: request.task,
     timeoutMs: Math.min(Math.max(1, request.timeoutMs), MAX_RUN_TIMEOUT_MS),
-    maxOutputBytes: MAX_RUN_OUTPUT_BYTES,
+    maxOutputBytes: MAX_RUN_OUTPUT_BYTES + JSON_ENVELOPE_BYTES,
     ...(request.signal === undefined ? {} : { signal: request.signal }),
     ...(deps.platform === undefined ? {} : { platform: deps.platform }),
   });
   switch (outcome.kind) {
-    case 'completed':
-      return outcome.exitCode === 0
-        ? { kind: 'completed', output: sanitize(outcome.stdout), truncated: outcome.truncated }
-        : { kind: 'failed' };
+    case 'completed': {
+      if (outcome.exitCode !== 0 || outcome.truncated) return { kind: 'failed' };
+      const parsed = parseClaudeJson(outcome.stdout);
+      if (parsed === undefined) return { kind: 'failed' };
+      const text = sanitize(parsed.text);
+      const cut = Buffer.byteLength(text) > MAX_RUN_OUTPUT_BYTES;
+      return {
+        kind: 'completed',
+        output: cut ? Buffer.from(text).subarray(0, MAX_RUN_OUTPUT_BYTES).toString('utf8').replace(/\uFFFD+$/u, '') : text,
+        truncated: cut,
+        ...(parsed.usedModels === undefined ? {} : { usedModels: parsed.usedModels }),
+      };
+    }
     case 'not-found':
       return { kind: 'not-installed' };
     default:

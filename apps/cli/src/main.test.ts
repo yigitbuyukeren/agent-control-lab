@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AppServerProcess, Exec, GitState, ProcessOutcome, ProcessSpec, SettingsScan } from '@agent-control-lab/core';
 import { run, type Deps } from './main.ts';
+import { claudeJson } from './claude-json-fixture.ts';
 
 async function capture(argv: string[], exec?: Exec) {
   let out = '';
@@ -366,7 +367,7 @@ describe('cli', () => {
             env: over.env ?? { PATH: '/bin' },
             runner: (spec) => {
               specs.push(spec);
-              return Promise.resolve(over.outcome ?? { kind: 'completed', exitCode: 0, stdout: 'answer\n', truncated: false });
+              return Promise.resolve(over.outcome ?? { kind: 'completed', exitCode: 0, stdout: claudeJson('answer\n'), truncated: false });
             },
           },
         );

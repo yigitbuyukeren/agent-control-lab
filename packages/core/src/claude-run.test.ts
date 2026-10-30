@@ -7,6 +7,7 @@ import {
   compareVersions,
   planClaudeRun,
   runClaude,
+  parseClaudeJson,
 } from './claude-run.ts';
 import { claudeRegistry } from './models.ts';
 import type { ProcessOutcome, ProcessSpec } from './process-runner.ts';
@@ -23,11 +24,35 @@ const auth = (over: Partial<AuthStatus> = {}): AuthStatus => ({
   ...over,
 });
 
+const ok = (result: string, modelUsage?: Record<string, unknown>): string =>
+  JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result, session_id: 'SESSION-SECRET', ...(modelUsage === undefined ? {} : { modelUsage }) });
+
+describe('parseClaudeJson', () => {
+  it('keeps only the answer and the model ids named in modelUsage', () => {
+    expect(parseClaudeJson(ok('hi', { 'claude-a': { inputTokens: 1 }, 'claude-b': {} }))).toEqual({ text: 'hi', usedModels: ['claude-a', 'claude-b'] });
+    expect(parseClaudeJson(JSON.stringify([{ type: 'system' }, JSON.parse(ok('hi', { m: {} })) as object]))?.text).toBe('hi');
+  });
+
+  it('reports UNKNOWN (undefined) when the response names no usable model', () => {
+    for (const usage of [undefined, {}, { 'bad id!': {} }, { 'claude-a': {}, 'bad id!': {} }]) {
+      expect(parseClaudeJson(ok('hi', usage))).toEqual({ text: 'hi', usedModels: undefined });
+    }
+    const many = Object.fromEntries(Array.from({ length: 9 }, (_, i) => [`m${String(i)}`, {}]));
+    expect(parseClaudeJson(ok('hi', many))?.usedModels).toBeUndefined();
+  });
+
+  it('rejects anything that is not a successful result with a text answer', () => {
+    for (const bad of ['plain text', '', '[]', '{}', 'null', JSON.stringify({ type: 'result', is_error: true, result: 'x' }), JSON.stringify({ type: 'result', subtype: 'error_max_turns', result: 'x' }), JSON.stringify({ type: 'result', result: 5 })]) {
+      expect(parseClaudeJson(bad)).toBeUndefined();
+    }
+  });
+});
+
 describe('buildClaudePrintArgs', () => {
   it('is tool-less, MCP-less, customisation-less, non-persistent and prompt-denying', () => {
     expect(buildClaudePrintArgs(selectionFor())).toEqual([
       '-p', '--tools', '', '--strict-mcp-config', '--restricted', '--safe-mode', '--disable-slash-commands',
-      '--no-session-persistence', '--permission-prompts', 'none', '--output-format', 'text',
+      '--no-session-persistence', '--permission-prompts', 'none', '--output-format', 'json',
     ]);
   });
 
@@ -187,14 +212,30 @@ describe('runClaude (mock runner)', () => {
   };
 
   it('starts claude with an explicit cwd, stdin prompt, bounded output and a cleaned environment', async () => {
-    const { spec } = await run({ kind: 'completed', exitCode: 0, stdout: 'x', truncated: false });
-    expect(spec).toMatchObject({ command: 'claude', cwd: '/work', input: 'hello', maxOutputBytes: 64 * 1024 });
+    const { spec } = await run({ kind: 'completed', exitCode: 0, stdout: ok('x'), truncated: false });
+    expect(spec).toMatchObject({ command: 'claude', cwd: '/work', input: 'hello', maxOutputBytes: 80 * 1024 });
     expect(spec.env).toEqual({ PATH: '/bin' });
   });
 
+  it('never carries the session id or other envelope fields, and shows UNKNOWN when no model is reported', async () => {
+    const { result } = await run({ kind: 'completed', exitCode: 0, stdout: ok('answer'), truncated: false });
+    expect(result).toEqual({ kind: 'completed', output: 'answer', truncated: false });
+    expect(JSON.stringify(result)).not.toContain('SESSION-SECRET');
+  });
+
+  it('cuts an answer above the output limit instead of failing', async () => {
+    const { result } = await run({ kind: 'completed', exitCode: 0, stdout: ok('a'.repeat(64 * 1024 + 10)), truncated: false });
+    expect(result).toMatchObject({ kind: 'completed', truncated: true });
+    expect(result.kind === 'completed' && result.output.length).toBe(64 * 1024);
+  });
+
   it('returns sanitized output on success and fixed outcomes otherwise', async () => {
-    expect((await run({ kind: 'completed', exitCode: 0, stdout: '\u001b[1mok\u001b[0m\n', truncated: false })).result).toEqual({ kind: 'completed', output: 'ok\n', truncated: false });
+    expect((await run({ kind: 'completed', exitCode: 0, stdout: ok('\u001b[1mok\u001b[0m\n', { 'claude-opus-5-5': {} }), truncated: false })).result).toEqual({ kind: 'completed', output: 'ok\n', truncated: false, usedModels: ['claude-opus-5-5'] });
     expect((await run({ kind: 'completed', exitCode: 1, stdout: 'sk-leak', truncated: false })).result).toEqual({ kind: 'failed' });
+    for (const stdout of ['sk-leak plain text', JSON.stringify({ type: 'result', is_error: true, result: 'sk-leak' })]) {
+      expect((await run({ kind: 'completed', exitCode: 0, stdout, truncated: false })).result).toEqual({ kind: 'failed' });
+    }
+    expect((await run({ kind: 'completed', exitCode: 0, stdout: ok('x'), truncated: true })).result).toEqual({ kind: 'failed' });
     expect((await run({ kind: 'timeout' })).result).toEqual({ kind: 'timeout' });
     expect((await run({ kind: 'cancelled' })).result).toEqual({ kind: 'cancelled' });
     expect((await run({ kind: 'not-found' })).result).toEqual({ kind: 'not-installed' });

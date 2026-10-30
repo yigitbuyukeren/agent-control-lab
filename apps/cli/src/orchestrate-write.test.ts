@@ -8,6 +8,7 @@ import { run } from './main.ts';
 import { parseOrchestrateArgs } from './orchestrate.ts';
 
 const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
+import { asClaude } from './claude-json-fixture.ts';
 const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
 
 const exec: Exec = (command, args) => {
@@ -100,7 +101,7 @@ async function go(argv: string[], scenario: Scenario = {}) {
         specs.push(spec);
         if (spec.command === 'claude') {
           claudeCalls += 1;
-          return Promise.resolve(scenario.claude?.[claudeCalls - 1] ?? done(claudeCalls === 1 ? 'PLAN: change a.txt' : 'VERDICT: approve'));
+          return Promise.resolve(asClaude(scenario.claude?.[claudeCalls - 1] ?? done(claudeCalls === 1 ? 'PLAN: change a.txt' : 'VERDICT: approve')));
         }
         if (spec.command === 'codex') return Promise.resolve(scenario.onCodex?.(spec) ?? done('implemented'));
         return Promise.resolve(scenario.onVerify?.(spec) ?? done('ok\n'));

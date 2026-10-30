@@ -6,6 +6,7 @@ import type { AppServerProcess, Exec, GitState, ProcessOutcome, ProcessSpec, Set
 import { run } from './main.ts';
 import { parseOrchestrateArgs } from './orchestrate.ts';
 
+import { asClaude } from './claude-json-fixture.ts';
 const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
 const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
 
@@ -76,7 +77,8 @@ async function go(
         runner: (spec) => {
           specs.push(spec);
           over.onSpawn?.(spec);
-          return Promise.resolve(over.outcomes?.[specs.length - 1] ?? done(`answer ${String(specs.length)}\n`));
+          const outcome = over.outcomes?.[specs.length - 1] ?? done(`answer ${String(specs.length)}\n`);
+          return Promise.resolve(spec.command === 'claude' ? asClaude(outcome) : outcome);
         },
       },
     );
@@ -173,6 +175,18 @@ describe('orchestrate --confirm', () => {
     expect(refused.error).toContain('not forwarded: HTTPS_PROXY');
     expect(refused.error + refused.out).not.toContain('topsecret');
     expect(refused.specs).toEqual([]);
+  });
+
+  it('reports the model the response named, or UNKNOWN, and never prints the raw JSON or session id', async () => {
+    const known = await go(CONFIRM, { outcomes: [done('PLAN\n'), done('VERDICT\n')] });
+    expect(known.out).toContain('model used (reported by the response): claude-test-1');
+    expect(known.out).not.toMatch(/SESSION-SECRET|total_cost|modelUsage/);
+    expect(known.error).not.toContain('SESSION-SECRET');
+    const bare = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'PLAN', session_id: 'SESSION-SECRET' });
+    const unknown = await go(CONFIRM, { outcomes: [done(bare), done('VERDICT\n')] });
+    expect(unknown.out).toContain('model used (reported by the response): UNKNOWN');
+    expect(unknown.out.match(/model used/g)).toHaveLength(1);
+    expect(unknown.out).not.toContain('SESSION-SECRET');
   });
 
   it('keeps the plan and reports a partial failure when the review fails', async () => {

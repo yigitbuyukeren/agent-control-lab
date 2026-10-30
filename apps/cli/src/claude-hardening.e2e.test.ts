@@ -31,7 +31,7 @@ process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
   const leaked = Object.keys(process.env).filter((k) => /^(ANTHROPIC_|CLAUDE|AWS_|OPENAI_|NODE_EXTRA_CA|NODE_TLS|SSL_CERT)|_PROXY$/i.test(k) && k !== 'CLAUDE_CONFIG_DIR');
   fs.writeFileSync(path.join(process.cwd(), 'ran.marker'), JSON.stringify({ args, stdin, leaked }));
-  console.log('FAKE-ANSWER');
+  console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, session_id: 'S', modelUsage: { 'claude-fake-1': {} }, result: 'FAKE-ANSWER' }));
 });
 `;
 

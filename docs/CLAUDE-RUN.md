@@ -78,3 +78,18 @@ itself rejects ends as a failed step with no fallback to another model. Whether 
 given model for an account can only be seen with a real call, which these tests never make. A future
 runtime proof would be to read the model the response reports as used (not implemented: its output shape
 was not observed here).
+
+## Output format and the model actually used
+
+The runner uses `--output-format json`. Only two things are taken from the response: the answer text
+(`result`) and the model ids named in `modelUsage`. The session id, token counts, cost and every other
+field are dropped as soon as they are parsed; raw JSON is never printed, logged or stored.
+
+- A response that is not a successful result object with a text answer (invalid JSON, `is_error`, a non-success
+  `subtype`, output cut by the byte limit) counts as `failed`, and nothing from it is shown.
+- `model used (reported by the response)` lists the `modelUsage` keys. If the response names none, or an
+  id looks malformed, it prints **UNKNOWN**; the requested `--model` is never shown as the model used.
+- `run --provider claude` prints only the answer on stdout; the model line goes to stderr. `orchestrate`
+  prints it under each completed Claude step, outside the answer. Codex steps have no such line.
+- The shape follows the documented `claude -p --output-format json` result; it was not observed against a real
+  call here (no model calls are made in tests), so a CLI change shows up as a failed step, not a wrong model.

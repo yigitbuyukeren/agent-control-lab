@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Exec } from '@agent-control-lab/core';
+import type { AppServerProcess, Exec } from '@agent-control-lab/core';
 import { run } from './main.ts';
 
 async function capture(argv: string[], exec?: Exec) {
@@ -57,5 +57,28 @@ describe('cli', () => {
     expect(r.out).toContain('Claude Code  logged in (subscription, pro)');
     expect(r.out).toContain('Codex        not logged in');
     expect(r.out).not.toContain('me@example.com');
+  });
+
+  it('prints quota windows, with unknown for missing data', async () => {
+    let lineCb: (line: string) => void = () => undefined;
+    const appServer = (): AppServerProcess => ({
+      send: (line) => {
+        const m = JSON.parse(line) as { id?: number };
+        if (m.id === 1) queueMicrotask(() => { lineCb('{"id":1,"result":{}}'); });
+        if (m.id === 2) {
+          const result = { rateLimits: { planType: 'pro', primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1800000000 } } };
+          queueMicrotask(() => { lineCb(JSON.stringify({ id: 2, result })); });
+        }
+      },
+      onLine: (cb) => (lineCb = cb),
+      onExit: () => undefined,
+      kill: () => Promise.resolve(),
+    });
+    let out = '';
+    const code = await run(['quota'], { out: (t) => (out += t), error: () => undefined }, { appServer });
+    expect(code).toBe(0);
+    expect(out).toContain('Codex plan: pro');
+    expect(out).toContain('5h window (primary): 12% used, resets 2027-01-15T08:00:00.000Z');
+    expect(out).toContain('secondary: unknown');
   });
 });

@@ -30,8 +30,12 @@ export interface AuthStatus {
   readonly error?: string;
 }
 
+/** Fixed messages only: raw errors or output may carry identity details. */
+const STATUS_UNAVAILABLE = 'status check could not run';
+const STATUS_FAILED = 'status command failed';
+
 const UNKNOWN: ParsedAuth = { state: 'unknown' };
-const PLAN_PATTERN = /^[\w-]{1,24}$/;
+const KNOWN_PLANS: ReadonlySet<string> = new Set(['free', 'pro', 'max', 'team', 'enterprise', 'edu']);
 
 /** `claude auth status` prints JSON with `loggedIn`, `authMethod`, `subscriptionType`. */
 export function parseClaudeAuth({ stdout }: AuthOutput): ParsedAuth {
@@ -48,7 +52,7 @@ export function parseClaudeAuth({ stdout }: AuthOutput): ParsedAuth {
   const authMethod = record['authMethod'];
   if (authMethod === 'claude.ai') {
     const plan = record['subscriptionType'];
-    return typeof plan === 'string' && PLAN_PATTERN.test(plan)
+    return typeof plan === 'string' && KNOWN_PLANS.has(plan)
       ? { state: 'logged-in', method: 'subscription', plan }
       : { state: 'logged-in', method: 'subscription' };
   }
@@ -85,8 +89,8 @@ export async function detectAuth(
   let result: Awaited<ReturnType<Exec>>;
   try {
     result = await exec(adapter.command, probe.args, { timeoutMs });
-  } catch (cause) {
-    return { ...base, state: 'error', error: cause instanceof Error ? cause.message : String(cause) };
+  } catch {
+    return { ...base, state: 'error', error: STATUS_UNAVAILABLE };
   }
   switch (result.kind) {
     case 'ok':
@@ -99,7 +103,7 @@ export async function detectAuth(
       // Logged-out CLIs commonly exit non-zero, so a recognised output still counts.
       const parsed = probe.parse({ stdout: result.stdout ?? '', stderr: result.stderr ?? '' });
       return parsed.state === 'unknown'
-        ? { ...base, state: 'error', error: result.detail }
+        ? { ...base, state: 'error', error: STATUS_FAILED }
         : fromParsed(base, parsed);
     }
   }

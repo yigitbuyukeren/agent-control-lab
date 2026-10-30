@@ -89,45 +89,59 @@ export interface ExecOptions {
   readonly exists?: (path: string) => boolean;
 }
 
+export interface Launch {
+  readonly file: string;
+  readonly args: readonly string[];
+  readonly verbatim: boolean;
+}
+
 /**
- * Builds an Exec that runs a fixed command with a timeout and no stdin. On Windows the
- * command is resolved on PATH first (so "not installed" never depends on an exit code);
- * `.cmd`/`.bat` shims, which npm-installed CLIs use, run through cmd.exe. Command names
- * and args come only from adapters, never from user input.
+ * Decides how to start a fixed command. On Windows the command is resolved on PATH first
+ * (so "not installed" never depends on an exit code); `.cmd`/`.bat` shims, which
+ * npm-installed CLIs use, run through cmd.exe. Returns undefined when it cannot be found
+ * on Windows. Command names and args come only from adapters, never from user input.
  */
-export function createExec(options: ExecOptions = {}): Exec {
+export function resolveLaunch(
+  command: string,
+  args: readonly string[],
+  options: ExecOptions = {},
+): Launch | undefined {
   const platform = options.platform ?? process.platform;
+  const env = options.env ?? process.env;
+  if (platform !== 'win32') return { file: command, args, verbatim: false };
+  const resolved = resolveWindowsExecutable(command, env, options.exists);
+  if (resolved === undefined) return undefined;
+  const ext = win32.extname(resolved).toLowerCase();
+  if (ext === '.cmd' || ext === '.bat') {
+    return {
+      file: envValue(env, 'ComSpec') ?? 'cmd.exe',
+      args: ['/d', '/s', '/c', `""${resolved}" ${args.join(' ')}"`],
+      verbatim: true,
+    };
+  }
+  return { file: resolved, args, verbatim: false };
+}
+
+/** Builds an Exec that runs a fixed command with a timeout and no stdin. */
+export function createExec(options: ExecOptions = {}): Exec {
   const env = options.env ?? process.env;
   return (command, args, { timeoutMs }) =>
     new Promise((resolve) => {
-      let file = command;
-      let fileArgs = [...args];
-      let verbatim = false;
-      if (platform === 'win32') {
-        const resolved = resolveWindowsExecutable(command, env, options.exists);
-        if (resolved === undefined) {
-          resolve({ kind: 'not-found' });
-          return;
-        }
-        const ext = win32.extname(resolved).toLowerCase();
-        if (ext === '.cmd' || ext === '.bat') {
-          file = envValue(env, 'ComSpec') ?? 'cmd.exe';
-          fileArgs = ['/d', '/s', '/c', `""${resolved}" ${args.join(' ')}"`];
-          verbatim = true;
-        } else {
-          file = resolved;
-        }
+      const launch = resolveLaunch(command, args, options);
+      if (launch === undefined) {
+        resolve({ kind: 'not-found' });
+        return;
       }
       const child = execFile(
-        file,
-        fileArgs,
+        launch.file,
+        [...launch.args],
         {
           env: { ...env },
           timeout: timeoutMs,
           killSignal: 'SIGKILL',
           maxBuffer: MAX_OUTPUT_BYTES,
           windowsHide: true,
-          windowsVerbatimArguments: verbatim,
+          windowsVerbatimArguments: launch.verbatim,
           encoding: 'utf8',
         },
         (error, stdout, stderr) => {

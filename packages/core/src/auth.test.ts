@@ -24,7 +24,7 @@ describe('parseClaudeAuth', () => {
       method: 'unknown',
     });
     expect(
-      parseClaudeAuth(out('{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"a b@c"}')),
+      parseClaudeAuth(out('{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"me@example.com"}')),
     ).toEqual({ state: 'logged-in', method: 'subscription' });
   });
 });
@@ -62,15 +62,18 @@ describe('detectAuth', () => {
     const as = (r: Awaited<ReturnType<Exec>>) => run(codexAdapter, () => Promise.resolve(r));
     expect(await as({ kind: 'not-found' })).toMatchObject({ state: 'not-installed' });
     expect(await as({ kind: 'timeout' })).toMatchObject({ state: 'error', error: 'timed out after 1000 ms' });
-    expect(await as({ kind: 'failed', detail: 'boom', stdout: 'garbage' })).toMatchObject({
+    expect(await as({ kind: 'failed', detail: 'boom me@example.com', stdout: 'garbage' })).toMatchObject({
       state: 'error',
-      error: 'boom',
+      error: 'status command failed',
     });
     expect(await as({ kind: 'failed', detail: 'x', stdout: 'Not logged in' })).toMatchObject({
       state: 'logged-out',
     });
     expect(await as({ kind: 'ok', stdout: 'new format' })).toMatchObject({ state: 'unknown' });
-    expect(await run(codexAdapter, () => Promise.reject(new Error('spawn')))).toMatchObject({ state: 'error' });
+    expect(await run(codexAdapter, () => Promise.reject(new Error('spawn me@example.com')))).toMatchObject({
+      state: 'error',
+      error: 'status check could not run',
+    });
   });
 
   it('never carries raw output or emails in the status', async () => {

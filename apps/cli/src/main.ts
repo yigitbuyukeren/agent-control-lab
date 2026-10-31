@@ -56,6 +56,7 @@ import { REFUSALS, CLAUDE_REFUSALS, describeIssue, describePinned } from './form
 import { runChained } from './statusline-chain.ts';
 import { runPlanImplementReviewCommand } from './orchestrate-write.ts';
 import { formatOutcomes } from './format.ts';
+import { parseWorkspacesArgs, runWorkspacesCommand } from './workspaces.ts';
 import { parseOrchestrateArgs, runOrchestrateCommand, usedModelLine } from './orchestrate.ts';
 import { claudePreflight, codexPreflight, type PreflightDeps } from './preflight.ts';
 
@@ -76,6 +77,7 @@ Commands:
                         Run Codex read-only inside a Git repository (subscription login only, no API-key fallback)
   run --provider claude --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode] [--cwd <dir>] [--timeout <seconds>]
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
+  workspaces --root <dir> [--task "<text>"] [--select <relative path | name>] [--json]    (read-only discovery of repos, monorepo packages and projects under a root; a task only suggests, it never chooses)
   orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|review>=auto|<id>] [--step-effort <plan|review>=auto|<level>]
                         Claude drafts a plan, Codex reviews it read-only (plan/review providers are choosable: --step-provider; every step has a permission profile, --step-profile step=read-only|text-only (Claude only); plan/review default to read-only); stops at the first failure (no retry, no fallback)
   orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
@@ -679,6 +681,14 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         return 2;
       }
       return args.workflow === 'plan-implement-review' ? runPlanImplementReviewCommand(args, io, deps) : runOrchestrateCommand(args, io, deps);
+    }
+    case 'workspaces': {
+      const args = parseWorkspacesArgs(argv.slice(1));
+      if (typeof args === 'string') {
+        io.error(`${args}\n`);
+        return 2;
+      }
+      return runWorkspacesCommand(args, io);
     }
     case 'outcomes': {
       if (deps.outcomes === undefined) {

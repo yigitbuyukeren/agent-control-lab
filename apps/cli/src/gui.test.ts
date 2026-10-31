@@ -305,6 +305,31 @@ describe('real plan-review run gate', () => {
     expect(ok.path).toBe(process.cwd());
     expect(ok.dirs.every((d) => !d.startsWith('.'))).toBe(true);
   });
+
+  it('discovers workspaces over the token-protected endpoint and only suggests', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'acl gui ws '));
+    try {
+      await mkdir(join(root, 'billing', '.git'), { recursive: true });
+      await mkdir(join(root, 'a', 'shared'), { recursive: true });
+      await mkdir(join(root, 'b', 'shared'), { recursive: true });
+      await writeFile(join(root, 'a', 'shared', 'package.json'), '{}');
+      await writeFile(join(root, 'b', 'shared', 'package.json'), '{}');
+      const base = await boot(fake([]));
+      const send = (body: unknown, token = TOKEN) => fetch(`${base}/api/workspaces`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': token }, body: JSON.stringify(body) });
+      expect((await send({ root }, 'wrong')).status).toBe(403);
+      expect((await send({ root: 'relative' })).status).toBe(400);
+      expect((await send({ root: join(root, 'missing') })).status).toBe(400);
+      const plain = (await (await send({ root })).json()) as { candidates: { relative: string }[]; suggestion?: unknown };
+      expect(plain.candidates.map((c) => c.relative)).toContain('billing');
+      expect(plain.suggestion).toBeUndefined();
+      const one = (await (await send({ root, task: 'fix billing' })).json()) as { suggestion: { state: string } };
+      expect(one.suggestion.state).toBe('suggested');
+      const two = (await (await send({ root, task: 'update shared code' })).json()) as { suggestion: { state: string } };
+      expect(two.suggestion.state).toBe('ambiguous');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Claude quota integration endpoints', () => {

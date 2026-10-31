@@ -4,6 +4,8 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import {
+  discoverWorkspaces,
+  suggestWorkspace,
   claudeSettingsPath,
   decodeChain,
   diagnoseClaudeIntegration,
@@ -350,6 +352,19 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
     }
     if (req.method === 'POST' && path === '/api/run/cancel') return json(res, 200, { cancelled: manager.cancel() });
     if (req.method === 'GET' && path === '/api/dirs') return listDirs(url, res);
+    if (req.method === 'POST' && path === '/api/workspaces') {
+      const body = await readJson(req);
+      if ('error' in body) return json(res, body.status, { error: body.error });
+      const input = obj(body.value);
+      const root = input?.['root'];
+      const task = input?.['task'];
+      if (typeof root !== 'string' || !isAbsolute(root) || root.length > 1024 || root.includes('\0')) return json(res, 400, { error: 'absolute root path needed' });
+      if (task !== undefined && (typeof task !== 'string' || task.length > 20000)) return json(res, 400, { error: 'task must be text' });
+      const found = await discoverWorkspaces(root);
+      if ('error' in found) return json(res, 400, { error: found.error });
+      const suggestion = typeof task === 'string' && task.trim() !== '' ? suggestWorkspace(task, found.candidates) : undefined;
+      return json(res, 200, { ...found, ...(suggestion === undefined ? {} : { suggestion }) });
+    }
     if (path === '/api/claude' && req.method === 'GET') {
       return json(res, 200, options.claude === undefined ? { unavailable: true } : publicDiagnosis(await options.claude.diagnose()));
     }

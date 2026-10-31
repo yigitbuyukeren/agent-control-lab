@@ -11,7 +11,7 @@ export function getInfo(env: { node: string; platform: string }): LabInfo {
   return { name: 'agent-control-lab', version: VERSION, ...env };
 }
 
-export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'outcomes' | 'run' | 'orchestrate'> {
+export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'outcomes' | 'run' | 'orchestrate' | 'workspaces'> {
   const [first] = argv;
   if (first === undefined || first === 'help' || first === '--help' || first === '-h') {
     return ok('help');
@@ -27,6 +27,7 @@ export function parseCommand(argv: readonly string[]): Result<'help' | 'version'
   if (first === 'outcomes') return ok('outcomes');
   if (first === 'run') return ok('run');
   if (first === 'orchestrate') return ok('orchestrate');
+  if (first === 'workspaces') return ok('workspaces');
   return err(`unknown command: ${first}`);
 }
 
@@ -62,5 +63,6 @@ export * from './workflows.ts';
 export * from './git-state.ts';
 export * from './workspace-policy.ts';
 export * from './workspace-guard.ts';
+export * from './workspace-discovery.ts';
 export * from './verify.ts';
 export * from './claude-integration.ts';

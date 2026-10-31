@@ -87,6 +87,10 @@ function buildRun(){
  R.tsel=h('select',{id:'tmo','aria-label':'Adım başına zaman aşımı',onchange:()=>{S.timeout=Number(R.tsel.value);drawRunBtn()}},[[120,'2 dakika'],[300,'5 dakika'],[600,'10 dakika'],[900,'15 dakika']].map(([v,t])=>h('option',{value:v},t)));R.tsel.value=String(S.timeout);
  R.cwdBox=h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Proje dizini'),h('p',{class:'hint'},'Claude ve Codex bu dizinde çalışır (araçsız plan, salt okunur inceleme). Gerçek çalıştırma için seçilmesi zorunludur.'),
   h('label',{class:'l',for:'cwd'},'Yol'),h('div',{class:'pathrow'},R.cwd,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.cwd.value.trim(),R.cwd)}},'Gözat')),R.picker);
+ R.dRoot=h('input',{type:'text',id:'droot',autocomplete:'off',placeholder:'/yol/kök-dizin'});R.dPicker=h('div',{class:'picker',hidden:true});R.dOut=h('div',{class:'stack'});
+ R.dBox=h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Proje keşfi'),h('p',{class:'hint'},'Seçtiğiniz kök altında repo, monorepo paketi ve Git dışı projeleri salt okunur listeler. Symlink’ler izlenmez, gizli dosyalar okunmaz. Görev metni yalnızca öneri üretir; seçimi siz yaparsınız.'),
+  h('label',{class:'l',for:'droot'},'Kök dizin'),h('div',{class:'pathrow'},R.dRoot,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.dRoot.value.trim(),R.dRoot)}},'Gözat')),R.dPicker,h('div',{class:'sp'}),
+  h('button',{type:'button',class:'chipbtn',onclick:discover},'Keşfet'),R.dOut);
  R.tmoBox=h('section',{class:'card lockable'},h('label',{class:'l',for:'tmo'},'Adım başına zaman aşımı'),R.tsel);
  R.runBtn=h('button',{class:'go run',type:'button',onclick:confirmRun},IC('play'),h('span',{}));
  R.runNote=h('p',{class:'note'});
@@ -98,7 +102,7 @@ function buildRun(){
   h('aside',{class:'stack'},
    h('section',{class:'card lockable'},h('h2',{},IC('spark'),'Model yönlendirme'),h('p',{class:'hint'},'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez.'),R.routes),
    h('section',{class:'card lockable'},h('h2',{},IC('gauge'),'Politika'),R.polHint,R.pol),
-   R.wsBox,R.cwdBox,R.tmoBox,
+   R.dBox,R.wsBox,R.cwdBox,R.tmoBox,
    h('section',{class:'card lockable'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul et ',h('code',{},'--accept-unverified'),'. Önizlemeye, gerçek çalıştırmayı ayrıca onaylarsanız ona da aktarılır. Proxy veya ön kontrol reddi kendiliğinden atlanmaz; bu bayrak yalnızca sizin açık tercihinizdir.'))),
    R.go,R.runBtn,R.runNote)));
  main.append(R.view)}
@@ -254,8 +258,25 @@ function confirmRun(){if(!S.result)return;const v=S.result.view;const dlg=h('dia
   c2?h('label',{class:'switch',for:'c2'},c2,h('span',{},'Doğrulanamayan ayarları (örn. proxy/TLS değişkenlerinin Claude’a iletilmemesi) gerçek çalıştırma için de kendim kabul ediyorum: --accept-unverified bu koşuya aktarılacak ve o ön kontrol uyarıları aşılacak.')):null,
   h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go)].filter((x)=>x!==null));
  document.body.append(dlg);dlg.addEventListener('close',()=>{dlg.remove()});dlg.showModal()}
+const DKIND={'git-repo':'Git deposu','git-worktree':'Git çalışma ağacı','git-submodule':'Git alt modülü',package:'paket','project':'proje'};
+function pickWorkspace(c){const t=S.workflow==='plan-implement-review'?R.ws:R.cwd;t.value=c.path;S.result=null;drawRunBtn();toast('Seçildi: '+c.relative)}
+function candRow(c,note){return h('div',{class:'row'},h('span',{class:'k'},c.relative),h('div',{class:'v'},h('b',{},c.name),' ',h('span',{class:'badge'},DKIND[c.kind]||c.kind),c.monorepo?h('span',{class:'badge'},'monorepo'):null,c.nestedIn?h('span',{class:'badge'},'iç içe repo'):null,
+  note?h('p',{class:'why'},note):null,h('button',{type:'button',class:'chipbtn',onclick:()=>{pickWorkspace(c)}},'Bunu seç')))}
+async function discover(){
+ const root=R.dRoot.value.trim();if(root===''){toast('Önce bir kök dizin seçin.');return}
+ try{const r=await api('/api/workspaces',{method:'POST',body:JSON.stringify({root,task:R.task.value})});const out=[];
+  out.push(h('p',{class:'why'},r.candidates.length+' aday'+(r.truncated?' (sınırlar nedeniyle liste kesildi)':'')+(r.enclosingRepo?'; kök bir Git deposunun içinde: '+r.enclosingRepo:'')));
+  const sg=r.suggestion;
+  if(sg){
+   if(sg.state==='suggested')out.push(h('h4',{},'Öneri (uygulanmadı)'),candRow(sg.best.candidate,sg.best.reasons.join('; ')+' (puan '+sg.best.score+')'));
+   else if(sg.state==='ambiguous')out.push(h('h4',{},'Belirsiz eşleşme: otomatik seçim yapılmadı'),...sg.matches.map((m)=>candRow(m.candidate,m.reasons.join('; ')+' (puan '+m.score+')')));
+   else out.push(h('p',{class:'why'},'Görev metni hiçbir adayla eşleşmedi; elle seçin.'))}
+  out.push(h('h4',{},'Tüm adaylar'),...r.candidates.map((c)=>candRow(c,c.markers.join(', '))));
+  if(r.skipped.length)out.push(h('p',{class:'why'},'Girilmeyenler: '+r.skipped.slice(0,10).map((s)=>s.relative+' ('+(s.reason==='symlink'?'symlink izlenmez':s.reason)+')').join(', ')));
+  R.dOut.replaceChildren(...out)}
+ catch(e){toast(String(e.message||e))}}
 async function browse(path,target){
- const pick=target===R.ws?R.wsPicker:R.picker;
+ const pick=target===R.ws?R.wsPicker:target===R.dRoot?R.dPicker:R.picker;
  try{const r=await api('/api/dirs?path='+encodeURIComponent(path||''));const sep=r.path.includes('\\')&&!r.path.includes('/')?'\\':'/';
   pick.hidden=false;
   pick.replaceChildren(h('div',{class:'pkh'},h('code',{},r.path)),

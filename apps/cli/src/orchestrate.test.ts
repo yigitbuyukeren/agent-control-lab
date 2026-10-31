@@ -649,6 +649,7 @@ describe('orchestrate plan-review: per-step provider', () => {
     expect(r.code).toBe(0);
     expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a']));
     expect(r.specs[1]?.args).toEqual(expect.arrayContaining(['--effort', 'low']));
+    expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-s', 'read-only']));
     const wrong = await go([...CONFIRM, ...SWAP, '--step-model', 'plan=claude-x']);
     expect(wrong.specs).toEqual([]);
     expect(wrong.code).toBe(1);

@@ -191,7 +191,7 @@ function drawRun(){const r=S.run;R.runOut.replaceChildren();setLocked(runActive(
  const steps=h('div',{class:'steps'},r.steps.map((st)=>h('div',{class:'srow'},h('span',{class:'dot '+(st.status==='completed'?'ok':st.status==='running'?'warn':(st.status==='failed'||st.status==='timeout')?'bad':'')}),h('b',{},(STEPS[st.id]||{tr:st.id}).tr),h('span',{class:'chip def'},PN[st.provider]||st.provider),
   h('span',{class:'chip '+chipCls(st.status)},SST[st.status]||st.status),st.seconds!=null?h('span',{class:'why'},st.seconds.toFixed(1)+' sn'):null,st.error?h('span',{class:'why'},st.error):null)));
  const card=h('section',{class:'card'},head,steps);
- const msg=r.status==='completed'?['ok','Koşu tamamlandı','Claude planladı, Codex inceledi. Dosya yazılmadı, commit/push yapılmadı.']:
+ const msg=r.status==='completed'?['ok','Koşu tamamlandı',PN[provOf('plan')]+' planladı, '+PN[provOf('review')]+' inceledi. Dosya yazılmadı, commit/push yapılmadı.']:
   r.status==='refused'?['bad','CLI ön kontrolü reddetti — hiçbir adım başlamadı','Güvenlik kontrolleri otomatik atlanmaz. Nedenleri aşağıda; giderip yeniden önizleyin.']:
   r.status==='cancelled'?['bad','Koşu iptal edildi','Başlatılan süreçler durduruldu; kısmi çıktı varsa aşağıdadır.']:
   r.status==='timeout'?['bad','Zaman aşımı','Koşu süre sınırını aştı ve durduruldu.']:r.status==='failed'?['bad','Koşu başarısız','Ayrıntı canlı kayıtta.']:null;

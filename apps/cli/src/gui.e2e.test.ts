@@ -94,7 +94,7 @@ afterAll(() => {
 const api = (path: string, body?: unknown) =>
   fetch(`${base}${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { 'x-acl-token': token, 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
 const req = (over: Record<string, unknown> = {}) => ({ workflow: 'plan-review', task: 'add a --json flag', routing: 'auto', policy: 'balanced', cwd: proj, timeoutSec: 60, steps: {}, ...over });
-type Snap = { status: string; steps: { id: string; status: string }[]; lines: string[]; sections?: { id: string; text: string }[]; refusal?: string[] };
+type Snap = { status: string; steps: { id: string; status: string; provider?: string }[]; lines: string[]; sections?: { id: string; text: string }[]; refusal?: string[] };
 async function settle(): Promise<Snap> {
   for (let i = 0; i < 300; i += 1) {
     const snap = (await (await api('/api/run')).json()) as Snap;
@@ -142,4 +142,56 @@ describe('GUI plan-review run against fake CLIs (no model is contacted)', () => 
     expect(preview.view.verdict).toBe('would-refuse');
     expect((await api('/api/run', { ...req(), confirm: true })).status).toBe(409);
   }, 60_000);
+});
+
+describe('GUI per-step provider choice against fake CLIs (no model is contacted)', () => {
+  type Preview = { exitCode: number; view: { verdict: string; steps: { id: string; provider: string; verdict: string; model?: { value: string } }[] } };
+  const preview = async (body: unknown) => (await (await api('/api/dry-run', body)).json()) as Preview;
+  const combos = [['claude', 'claude'], ['codex', 'claude'], ['codex', 'codex'], ['claude', 'codex']] as const;
+
+  it.each(combos)('plan on %s, review on %s: previews, then runs exactly those providers in order', async (plan, review) => {
+    setMode();
+    const body = req({ steps: { providers: { plan, review } } });
+    const before = calls().length;
+    const p = await preview(body);
+    expect(p.view.verdict).toBe('would-run');
+    expect(p.view.steps.map((s) => `${s.id}:${s.provider}`)).toEqual([`plan:${plan}`, `review:${review}`]);
+    expect(calls().length).toBe(before);
+    expect((await api('/api/run', { ...body, confirm: true })).status).toBe(202);
+    const done = await settle();
+    expect(done.status).toBe('completed');
+    expect(done.steps.map((s) => s.provider)).toEqual([plan, review]);
+    expect(calls().slice(before)).toEqual([plan, review]);
+  }, 60_000);
+
+  it('needs a new preview when the provider changes after it', async () => {
+    setMode();
+    await preview(req());
+    const swapped = req({ steps: { providers: { plan: 'codex' } } });
+    const before = calls().length;
+    expect((await api('/api/run', { ...swapped, confirm: true })).status).toBe(409);
+    expect(calls().length).toBe(before);
+  });
+
+  it('refuses invalid provider choices and keeps plan-implement-review preview only', async () => {
+    setMode();
+    for (const providers of [{ plan: 'gemini' }, { implement: 'claude' }, { verify: 'codex' }]) {
+      expect((await api('/api/dry-run', req({ steps: { providers } }))).status).toBe(400);
+    }
+    const pir = req({ workflow: 'plan-implement-review', cwd: undefined, workspace: proj, steps: { providers: { plan: 'codex', review: 'codex' } } });
+    const p = (await (await api('/api/dry-run', pir)).json()) as Preview;
+    expect(p.view.steps.map((s) => `${s.id}:${s.provider}`).slice(0, 2)).toEqual(['plan:codex', 'implement:codex']);
+    const before = calls().length;
+    expect((await api('/api/run', { ...pir, confirm: true })).status).toBe(400);
+    expect(calls().length).toBe(before);
+  });
+
+  it('refuses a model of the other provider at preflight, and shows it in the preview', async () => {
+    setMode();
+    const p = await preview(req({ steps: { providers: { review: 'claude' }, models: { review: 'gpt-nope' } } }));
+    expect(p.view.verdict).toBe('would-refuse');
+    const before = calls().length;
+    expect((await api('/api/run', { ...req({ steps: { providers: { review: 'claude' }, models: { review: 'gpt-nope' } } }), confirm: true })).status).toBe(409);
+    expect(calls().length).toBe(before);
+  });
 });

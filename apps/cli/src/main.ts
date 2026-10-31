@@ -77,9 +77,9 @@ Commands:
   run --provider claude --task "<text>" --confirm [--accept-unverified] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode] [--cwd <dir>] [--timeout <seconds>]
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
   orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|review>=auto|<id>] [--step-effort <plan|review>=auto|<level>]
-                        Claude drafts a plan, Codex reviews it read-only; stops at the first failure (no retry, no fallback)
-  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
-                        Claude plans, Codex WRITES in that worktree only, limits are checked, Claude reviews the diff; no commit or push
+                        Claude drafts a plan, Codex reviews it read-only (plan/review providers are choosable: --step-provider; Claude steps are tool-less, Codex steps read-only); stops at the first failure (no retry, no fallback)
+  orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
+                        Claude plans, Codex WRITES in that worktree only, limits are checked, Claude reviews the diff; no commit or push (plan/review providers choosable; implement always Codex, no Claude write runner)
   run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)
@@ -90,7 +90,7 @@ Commands:
   route --dry-run --task <kind> [--prefer claude|codex|auto] [--model auto|<id>] [--effort auto|<level>] [--mode normal|ultracode]
                         Recommend a provider (no agent is started)
   statusline-collect    Store 5h/7d limits from statusLine JSON on stdin (opt-in, see docs/STATUSLINE.md)
-  gui [--port <n>]      Local dark-mode dry-run preview in the browser (loopback only; starts no agent, writes nothing)
+  gui [--port <n>]      Local dark-mode browser UI (loopback only): dry-run preview, and real plan-review runs only after a matching preview and explicit confirmation
   auth-status Show provider login state and method (local status commands only)
 `;
 

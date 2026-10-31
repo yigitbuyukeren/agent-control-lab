@@ -640,3 +640,49 @@ describe('plan-implement-review: outcome records and --model-routing measured', 
     expect(dry.out).not.toContain('model: gpt-a');
   });
 });
+
+describe('plan-implement-review: per-step provider', () => {
+  const combos = [['claude', 'claude'], ['claude', 'codex'], ['codex', 'claude'], ['codex', 'codex']] as const;
+  const sandboxOf = (args: readonly string[]): string | undefined => args[args.indexOf('-s') + 1];
+
+  it.each(combos)('plan on %s, review on %s: dry run names the providers and starts nothing', async (plan, review) => {
+    const r = await go([...ARGS(), '--dry-run', '--step-provider', `plan=${plan}`, '--step-provider', `review=${review}`]);
+    expect(r.code).toBe(0);
+    expect(r.commands).toEqual([]);
+    expect(r.out).toContain(`step 1/4 plan [${plan}]`);
+    expect(r.out).toContain('implement [codex]: WRITE sandbox');
+    expect(r.out).toContain(`step 4/4 review [${review}]`);
+  });
+
+  it.each(combos)('plan on %s, review on %s: only the implement step gets a write sandbox', async (plan, review) => {
+    const r = await go([...WRITE(), '--step-provider', `plan=${plan}`, '--step-provider', `review=${review}`], { onCodex: editFile() });
+    expect(r.code).toBe(0);
+    const model = r.specs.filter((s) => s.command === 'claude' || s.command === 'codex');
+    expect(model.map((s) => s.command)).toEqual([plan, 'codex', review]);
+    const sandboxes = model.map((s) => (s.command === 'codex' ? sandboxOf(s.args) : undefined));
+    expect(sandboxes[1]).toBe('workspace-write');
+    for (const i of [0, 2]) if (model[i]?.command === 'codex') expect(sandboxes[i]).toBe('read-only');
+    expect(mainState().status).toBe('');
+  });
+
+  it('refuses a Claude implementation, in either order, before anything starts', () => {
+    for (const flags of [['--step-provider', 'implement=claude'], ['--step-provider', 'review=codex', '--step-provider', 'implement=claude']]) {
+      expect(typeof parseOrchestrateArgs([...ARGS(), '--dry-run', ...flags])).toBe('string');
+    }
+  });
+
+  it('checks a manual model against the chosen provider for every step', async () => {
+    const wrongPlan = await go([...WRITE(), '--step-provider', 'plan=codex', '--step-model', 'plan=claude-x', '--accept-unverified']);
+    expect(wrongPlan.code).toBe(1);
+    expect(wrongPlan.commands).toEqual([]);
+    expect(wrongPlan.error).toContain('step plan [codex]');
+    const wrongReview = await go([...WRITE(), '--step-provider', 'review=codex', '--step-model', 'review=nope']);
+    expect(wrongReview.code).toBe(1);
+    expect(wrongReview.commands).toEqual([]);
+    const good = await go([...WRITE(), '--step-provider', 'plan=codex', '--step-model', 'plan=gpt-a', '--step-effort', 'plan=low', '--step-provider', 'review=codex', '--step-model', 'review=gpt-a'], { onCodex: editFile() });
+    expect(good.code).toBe(0);
+    const codexSpecs = good.specs.filter((s) => s.command === 'codex');
+    expect(codexSpecs).toHaveLength(3);
+    expect(codexSpecs[0]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=low']));
+  });
+});

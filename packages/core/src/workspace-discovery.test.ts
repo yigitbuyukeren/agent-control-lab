@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { discoverWorkspaces, selectWorkspace, suggestWorkspace, type Discovery, type WorkspaceCandidate } from './workspace-discovery.ts';
 
 let base = '';
@@ -83,7 +83,7 @@ describe('discoverWorkspaces', () => {
     await dir('app');
     await file('app/package.json', '{"name":"app"}');
     const d = await discover(join(base, 'app'));
-    expect(d.enclosingRepo).toBe(d.root.replace(/\/app$/, ''));
+    expect(d.enclosingRepo).toBe(dirname(d.root));
     expect(d.candidates[0]).toMatchObject({ relative: '.', kind: 'package' });
   });
 

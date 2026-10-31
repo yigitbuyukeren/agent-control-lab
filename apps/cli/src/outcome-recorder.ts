@@ -28,7 +28,7 @@ export async function recordRun(
   if (store === undefined) return '';
   if (!enabled) return 'outcomes: not recorded (--no-record)\n';
   const steps: RunFacts['steps'] = Object.fromEntries(
-    selectionSteps(workflow).flatMap(({ step, provider }) => {
+    selectionSteps(workflow, requests).flatMap(({ step, provider }) => {
       const request = requests[step]?.request;
       return request === undefined ? [] : [[step, { provider, model: request.model, effort: request.effort }]];
     }),

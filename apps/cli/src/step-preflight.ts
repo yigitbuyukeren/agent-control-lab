@@ -118,7 +118,7 @@ export async function preflightSteps(
 ): Promise<StepPreflight[]> {
   const cache = new Map<string, Promise<ClaudePreflight | CodexPreflight>>();
   const results: StepPreflight[] = [];
-  for (const { step, provider } of selectionSteps(workflow)) {
+  for (const { step, provider } of selectionSteps(workflow, requests)) {
     const requested = requests[step];
     if (requested === undefined) throw new Error(`no request for step ${step}`);
     const input = { ...common, request: requested.request };

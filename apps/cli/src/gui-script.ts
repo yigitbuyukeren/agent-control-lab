@@ -16,10 +16,11 @@ const POLICIES=[{id:'economy',name:'Ekonomi'},{id:'balanced',name:'Dengeli'},{id
 const POLICY_HINT={economy:'Mümkün olan en düşük efor ve verimli modeller.',balanced:'Görev boyutuna göre orta efor; satıcının dengeli modeli.',quality:'Yetenek öncelikli; daha yüksek efor.'};
 const FLOWS={'plan-review':['plan','review'],'plan-implement-review':['plan','implement','review']};
 const STEPS={
- plan:{tr:'Plan',icon:'layers',d:'Görevi adımlara böler. Araçsız, oturum kaydı yok.',provider:()=> 'claude'},
+ plan:{tr:'Plan',icon:'layers',d:'Görevi adımlara böler. Claude araçsız, Codex salt okunur çalışır.',provider:()=> 'claude'},
  implement:{tr:'Uygulama',icon:'term',d:'Yalnızca izole çalışma ağacına yazar.',provider:()=> 'codex'},
  review:{tr:'İnceleme',icon:'shield',d:'Çıktıyı bağımsız olarak gözden geçirir.',provider:(w)=>w==='plan-review'?'codex':'claude'}};
 const PN={claude:'Claude',codex:'Codex'};
+const provOf=(id)=>{const st=S.steps[id];return id!=='implement'&&st.provider?st.provider:STEPS[id].provider(S.workflow)};
 const S={claude:null,claudeMsg:'',cwd:'',timeout:300,previewKey:null,run:null,runLines:[],runCursor:0,timer:null,tick:null,view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
 const modelsOf=(p)=>{const g=(S.status&&S.status.models||[]).find((x)=>x.provider===p);return g?g.models:[]};
 const effortsFor=(p,id)=>{const ms=modelsOf(p);const m=ms.find((x)=>x.id===id);if(m)return m.efforts;const all=[];for(const x of ms)for(const e of x.efforts)if(!all.includes(e))all.push(e);return all};
@@ -104,7 +105,9 @@ function drawControls(){
 function nodeResult(id){return S.result&&S.result.view.steps.find((x)=>x.id===id)}
 function drawFlow(){
  const ids=FLOWS[S.workflow];const kids=[];
- ids.forEach((id,i)=>{const d=STEPS[id];const prov=d.provider(S.workflow);const st=S.steps[id];const res=nodeResult(id);
+ ids.forEach((id,i)=>{const d=STEPS[id];const prov=provOf(id);const st=S.steps[id];const res=nodeResult(id);
+  const psel=id==='implement'?null:h('select',{'aria-label':d.tr+' sağlayıcısı',onchange:()=>{st.provider=psel.value;st.model='';st.effort='';S.result=null;drawFlow();drawResult()}},h('option',{value:''},'Otomatik ('+PN[d.provider(S.workflow)]+')'),h('option',{value:'claude'},'Claude'),h('option',{value:'codex'},'Codex'));
+  if(psel)psel.value=st.provider||'';
   const ms=modelsOf(prov);
   const msel=h('select',{'aria-label':d.tr+' modeli',onchange:()=>{st.model=msel.value;if(st.effort&&!effortsFor(prov,st.model).includes(st.effort))st.effort='';S.result=null;drawFlow();drawResult()}},
    h('option',{value:''},'Otomatik (yönlendirme)'),ms.map((m)=>h('option',{value:m.id},m.label+' · '+m.id)));
@@ -116,7 +119,7 @@ function drawFlow(){
    h('div',{class:'ttl'},h('span',{class:'ico'},IC(d.icon)),d.tr,h('span',{class:'num'},String(i+1).padStart(2,'0'))),
    h('div',{class:'sub'},d.d),
    h('div',{class:'fields'},h('span',{class:'chip'},h('span',{class:'dot',style:null}),PN[prov]),
-    h('div',{},h('label',{class:'l'},'Model'),msel),h('div',{},h('label',{class:'l'},'Efor'),esel),
+    psel?h('div',{},h('label',{class:'l'},'Sağlayıcı'),psel):h('p',{class:'why'},'Uygulama Codex’te kalır: güvenli bir Claude yazma çalıştırıcısı yok.'),h('div',{},h('label',{class:'l'},'Model'),msel),h('div',{},h('label',{class:'l'},'Efor'),esel),
     manualClaude?h('p',{class:'why'},'Claude erişimi doğrulanamaz: elle seçim “doğrulanmamış” sayılır.'):null,
     res?h('div',{},settingChip(res.model),' ',settingChip(res.effort)):null,h('div',{class:'rstat','data-step':id}))));
   if(i<ids.length-1)kids.push(h('div',{class:'link'+(S.result?' live':''),'aria-hidden':'true'}))});
@@ -150,8 +153,8 @@ function stepCard(s,i){
   card.append(h('details',{},h('summary',{},IC('chev'),'Kanıtlar ('+ev.length+')'),h('div',{class:'ev'},body)))}
  return card}
 function row(k,v,why){return h('div',{class:'row'},h('span',{class:'k'},k),h('div',{class:'v'},v,why?h('p',{class:'why'},'CLI gerekçesi: '+why):null))}
-function bodyNow(){const models={},efforts={};for(const id of FLOWS[S.workflow]){const st=S.steps[id];if(st.model)models[id]=st.model;if(st.effort)efforts[id]=st.effort}
- const b={workflow:S.workflow,task:R.task.value,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,steps:{models,efforts},workspace:R.ws.value.trim(),verify:R.verify.value.trim(),timeoutSec:S.timeout};
+function bodyNow(){const models={},efforts={},providers={};for(const id of FLOWS[S.workflow]){const st=S.steps[id];if(id!=='implement'&&st.provider)providers[id]=st.provider;if(st.model)models[id]=st.model;if(st.effort)efforts[id]=st.effort}
+ const b={workflow:S.workflow,task:R.task.value,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,steps:{providers,models,efforts},workspace:R.ws.value.trim(),verify:R.verify.value.trim(),timeoutSec:S.timeout};
  if(S.workflow==='plan-review')b.cwd=R.cwd.value.trim();return b}
 const paramsKey=()=>JSON.stringify(bodyNow());
 const runActive=()=>!!S.run&&(S.run.status==='running'||S.run.status==='cancelling');

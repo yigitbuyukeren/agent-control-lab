@@ -119,7 +119,7 @@ export async function applyPolicy(
     }
     return { list, available, decision, evidence, note, applied };
   };
-  for (const { step, provider } of selectionSteps(workflow)) {
+  for (const { step, provider } of selectionSteps(workflow, requests)) {
     let current = requests[step];
     if (current === undefined) continue;
     if (routing === 'guided') {

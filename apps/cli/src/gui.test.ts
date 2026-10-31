@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeClaudeCache } from '@agent-control-lab/core';
-import { buildDryRunArgv, createGuiServer, fileClaudeIntegration, listenGui } from './gui.ts';
+import { buildDryRunArgv, chosenProviders, createGuiServer, fileClaudeIntegration, listenGui } from './gui.ts';
 import { parseGuiArgs } from './gui-command.ts';
 
 const TOKEN = 'test-token';
@@ -55,6 +55,18 @@ describe('buildDryRunArgv', () => {
     for (const bad of [{ ...good, workflow: 'x' }, { ...good, routing: 'x' }, { ...good, policy: 'x' }, { ...good, task: ' ' }, { ...good, steps: { models: { implement: 'm' } } }, { ...good, steps: { models: { plan: '--confirm' } } }, 5]) {
       expect('error' in buildDryRunArgv(bad)).toBe(true);
     }
+  });
+  it('passes provider choices and rejects invalid ones, including Claude for implement', () => {
+    const ok = buildDryRunArgv({ ...good, steps: { providers: { plan: 'codex', review: 'claude' } } });
+    if ('error' in ok) throw new Error(ok.error);
+    expect(ok.argv).toEqual(expect.arrayContaining(['--step-provider', 'plan=codex', '--step-provider', 'review=claude']));
+    expect(chosenProviders(ok.argv)).toEqual(['codex', 'claude']);
+    expect(chosenProviders(['orchestrate'])).toEqual(['claude', 'codex']);
+    const wf = { ...good, workflow: 'plan-implement-review', workspace: '/w' };
+    for (const bad of [{ implement: 'claude' }, { plan: 'gemini' }, { plan: '--confirm' }, { verify: 'codex' }, { implement: 5 }]) {
+      expect('error' in buildDryRunArgv({ ...wf, steps: { providers: bad } })).toBe(true);
+    }
+    expect('error' in buildDryRunArgv({ ...wf, steps: { providers: { implement: 'codex', review: 'codex' } } })).toBe(false);
   });
   it('passes step settings and the write workflow workspace only as dry-run values', () => {
     const built = buildDryRunArgv({ workflow: 'plan-implement-review', task: 't', routing: 'auto', policy: 'balanced', steps: { models: { implement: 'gpt-x' }, efforts: { review: 'high' } }, workspace: '/w', verify: 'pnpm test' });
@@ -264,6 +276,19 @@ describe('real plan-review run gate', () => {
     await post2(bad, '/api/dry-run', body());
     await post2(bad, '/api/run', body({ confirm: true }));
     expect((await settle(bad)).status).toBe('failed');
+  });
+
+  it('checks quota only for the providers the run uses', async () => {
+    const full = await boot(fake([], { quota: 'Codex plan: plus\n  5h window (primary): 97% used\n' }));
+    const post2 = (path: string, b: unknown) => fetch(`${full}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, body: JSON.stringify(b) });
+    const claudeOnly = body({ steps: { providers: { plan: 'claude', review: 'claude' } } });
+    await post2('/api/dry-run', claudeOnly);
+    expect((await post2('/api/run', { ...claudeOnly, confirm: true })).status).toBe(202);
+    await settle(full);
+    const swapped = body({ steps: { providers: { plan: 'codex' } } });
+    await post2('/api/dry-run', swapped);
+    expect((await post2('/api/run', { ...swapped, confirm: true })).status).toBe(409);
+    expect((await post2('/api/run', { ...swapped, confirm: true })).status).toBe(409);
   });
 
   it('lists only directories, needs the token, and rejects relative paths', async () => {

@@ -629,3 +629,28 @@ describe('orchestrate --model-routing guided', () => {
     expect(reviewModel(plain.out)).toBeDefined();
   });
 });
+
+describe('orchestrate plan-review: per-step provider', () => {
+  const SWAP = ['--step-provider', 'plan=codex', '--step-provider', 'review=claude'];
+
+  it('dry run shows the chosen providers and refuses invalid choices', async () => {
+    const r = await go([...DRY, ...SWAP]);
+    expect(r.specs).toEqual([]);
+    expect(r.out).toContain('step 1/2 plan [codex]: read-only sandbox');
+    expect(r.out).toContain('step 2/2 review [claude]: tool-less');
+    for (const bad of [['--step-provider', 'implement=claude'], ['--step-provider', 'plan=gemini'], ['--step-provider', 'plan=codex', '--step-provider', 'plan=claude']]) {
+      expect(typeof parseOrchestrateArgs(['--workflow', 'plan-review', '--task', 'x', '--dry-run', ...bad])).toBe('string');
+    }
+    expect(typeof parseOrchestrateArgs(['--workflow', 'plan-implement-review', '--task', 'x', '--dry-run', '--workspace', '/w', '--step-provider', 'implement=claude'])).toBe('string');
+  });
+
+  it('runs the swapped providers with their own selections, and a manual model checks against the chosen provider', async () => {
+    const r = await go([...CONFIRM, ...SWAP, '--step-model', 'plan=gpt-a', '--step-effort', 'review=low', '--accept-unverified']);
+    expect(r.code).toBe(0);
+    expect(r.specs[0]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a']));
+    expect(r.specs[1]?.args).toEqual(expect.arrayContaining(['--effort', 'low']));
+    const wrong = await go([...CONFIRM, ...SWAP, '--step-model', 'plan=claude-x']);
+    expect(wrong.specs).toEqual([]);
+    expect(wrong.code).toBe(1);
+  });
+});

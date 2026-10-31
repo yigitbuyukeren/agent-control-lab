@@ -15,7 +15,7 @@ import {
 } from '@agent-control-lab/core';
 import { recordRun } from './outcome-recorder.ts';
 import { applyPolicy } from './policy.ts';
-import { formatResult, formatStep, policyLine, type OrchestrateArgs, type OrchestrateDeps, type OrchestrateIo } from './orchestrate.ts';
+import { formatResult, formatStep, policyLine, readOnlyMode, type OrchestrateArgs, type OrchestrateDeps, type OrchestrateIo } from './orchestrate.ts';
 import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
 
 /** Fixed explanations for why a workspace was rejected; nothing here comes from git output. */
@@ -74,7 +74,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         (prep.ok || prep.reason === 'git-state-unreadable' ? '' : prep.problems.map((p) => `      ${WORKSPACE_PROBLEMS[p] ?? p}\n`).join('')) +
         `  timeout: ${String(args.timeoutMs / 1000)}s per step\n  task: ${String(args.task.length)} characters\n` +
         policyLine(args.policy, chosen.quotaNote, args.modelRouting) +
-        `  ${n(1)} plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
+        `  ${n(1)} plan [${planPf.provider}]: ${readOnlyMode(planPf)}, subscription login: ${stepVerdict(planPf)}\n` +
         selectionLines(planPf) +
         stepDetails(planPf) +
         `  ${n(2)} implement [codex]: WRITE sandbox limited to the workspace, git ${implementPf.codex.git}, subscription login: ${stepVerdict(implementPf)}\n` +
@@ -87,7 +87,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         (args.verify === undefined
           ? ''
           : `  ${n(4)} verify [local]: ${[args.verify.command, ...args.verify.args].join(' ')} (no shell, cleaned environment; RUNS THE NEWLY WRITTEN CODE OUTSIDE ANY MODEL SANDBOX, refused if build/test config files changed, state re-checked afterwards)\n`) +
-        `  ${n(total)} review [claude]: tool-less; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each); subscription login: ${stepVerdict(reviewPf)}\n` +
+        `  ${n(total)} review [${reviewPf.provider}]: ${reviewPf.provider === 'claude' ? 'tool-less' : 'read-only sandbox'}; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each); subscription login: ${stepVerdict(reviewPf)}\n` +
         selectionLines(reviewPf) +
         stepDetails(reviewPf) +
         '  guarantees: no commit, no push, no branch or main-tree changes, no workspace creation, no revert or delete, no retries, no provider fallback, no API keys, ultracode never selected\n' +
@@ -127,6 +127,8 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     claudeSelection: stepSelection(planPf),
     codexSelection: stepSelection(implementPf),
     reviewSelection: stepSelection(reviewPf),
+    planChoice: { provider: planPf.provider, selection: stepSelection(planPf) },
+    reviewChoice: { provider: reviewPf.provider, selection: stepSelection(reviewPf) },
     timeoutMs: args.timeoutMs,
     inspect: createWorkspaceInspector({ cwd, before: prep.before, git: gitDeps }),
     ...(verifyCommand === undefined || args.confirmVerify !== true

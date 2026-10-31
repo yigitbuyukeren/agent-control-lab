@@ -346,3 +346,7 @@ The log and output shown are masked first (API keys, tokens, Bearer headers, pas
 `--accept-unverified` in the GUI is your explicit choice and it is passed to the real run too, not only to the preview: the option text says so, the confirmation dialog shows it as accepted and needs a separate checkbox, and the server rejects a real run that lacks `confirmAcceptUnverified`. Nothing sets it automatically, and a refused preflight is never retried with it.
 
 The live log keeps the newest 400 masked lines. The cursor is an absolute line count, so polling continues after the limit; a client that fell behind gets the newest lines plus how many were skipped. The page keeps at most 400 lines as well.
+
+## Step provider choice
+
+`--step-provider <plan|review>=auto|claude|codex` chooses which provider runs the planning or review step (`auto` keeps the workflow default: plan on Claude, review on Codex in `plan-review`, on Claude in `plan-implement-review`). The implementation step always stays on Codex; `--step-provider implement=claude` is refused because there is no safe Claude write runner. A Claude step is tool-less, a Codex step runs in a read-only sandbox. A manual provider choice overrides automatic routing for that step, and `--step-model` / `--step-effort` are verified against the chosen provider, so a model of the other provider is refused. Dry-run, preflight, quota guard and confirmations are unchanged; the GUI's quota guard only considers the providers a run uses.

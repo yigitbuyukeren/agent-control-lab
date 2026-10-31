@@ -40,3 +40,20 @@ describe('buildStepRequests', () => {
     expect(typeof buildStepRequests('plan-review', flags)).toBe('string');
   });
 });
+
+describe('step provider choice', () => {
+  it('keeps defaults, applies a choice and lets selectionSteps follow it', () => {
+    const r = buildStepRequests('plan-review', { models: [], efforts: [], providers: ['plan=codex', 'review=auto'] });
+    if (typeof r === 'string') throw new Error(r);
+    expect(r.plan?.provider).toBe('codex');
+    expect(r.review?.provider).toBeUndefined();
+    expect(selectionSteps('plan-review', r).map((s) => `${s.step}:${s.provider}`)).toEqual(['plan:codex', 'review:codex']);
+    const w = buildStepRequests('plan-implement-review', { models: [], efforts: [], providers: ['review=codex', 'implement=codex'] });
+    if (typeof w === 'string') throw new Error(w);
+    expect(selectionSteps('plan-implement-review', w).map((s) => `${s.step}:${s.provider}`)).toEqual(['plan:claude', 'implement:codex', 'review:codex']);
+  });
+
+  it.each([['implement=claude'], ['plan=gemini'], ['plan=claude', 'plan=codex'], ['verify=codex'], ['plan']])('refuses %j', (...providers) => {
+    expect(typeof buildStepRequests('plan-implement-review', { models: [], efforts: [], providers })).toBe('string');
+  });
+});

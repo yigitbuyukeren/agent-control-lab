@@ -11,9 +11,11 @@ import {
   isModelRouting,
   isPolicyName,
   isWorkflowName,
+  PROVIDER_CHOICE_STEPS,
   resolveCacheDir,
   uninstallCollector,
   type InstallResult,
+  type SelectionStep,
   type IntegrationDiagnosis,
   type IntegrationPaths,
   type UninstallResult,
@@ -86,6 +88,16 @@ function obj(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
+/** The providers of plan and review that a built argv will use: the chosen ones, otherwise the plan-review defaults. */
+export function chosenProviders(argv: readonly string[]): ('claude' | 'codex')[] {
+  const pick = (step: string, fallback: 'claude' | 'codex'): 'claude' | 'codex' => {
+    const at = argv.findIndex((a, i) => argv[i - 1] === '--step-provider' && a.startsWith(`${step}=`));
+    const value = at < 0 ? undefined : argv[at]?.slice(step.length + 1);
+    return value === 'claude' || value === 'codex' ? value : fallback;
+  };
+  return [pick('plan', 'claude'), pick('review', 'codex')];
+}
+
 /** Turns a validated request into a dry-run argument vector. `--dry-run` is always present; no confirm flag can ever be produced. */
 export function buildDryRunArgv(input: unknown): Built {
   const body = obj(input);
@@ -108,6 +120,12 @@ export function buildDryRunArgv(input: unknown): Built {
     argv.push('--timeout', String(timeoutSec));
   }
   const steps = obj(body['steps']) ?? {};
+  const providers = obj(steps['providers']) ?? {};
+  for (const [step, value] of Object.entries(providers)) {
+    if (!STEP_NAMES[workflow].includes(step) || typeof value !== 'string' || !['auto', 'claude', 'codex'].includes(value)) return { error: `invalid provider for ${step}` };
+    if (value === 'claude' && !PROVIDER_CHOICE_STEPS.includes(step as SelectionStep)) return { error: `the ${step} step stays on codex: there is no safe Claude write runner` };
+    argv.push('--step-provider', `${step}=${value}`);
+  }
   for (const [group, flag] of [['models', '--step-model'], ['efforts', '--step-effort']] as const) {
     const map = obj(steps[group]) ?? {};
     for (const [step, value] of Object.entries(map)) {
@@ -244,16 +262,17 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
     if (expiry === undefined || expiry < now()) return json(res, 409, { error: 'run a successful dry-run preview with exactly these settings first' });
     return exclusive(async () => {
       if (manager.active) return json(res, 409, { error: 'a run is already active' });
+      const used = chosenProviders(built.argv);
       const quota = parseQuota(await ask(['quota']));
-      const full = quota.flatMap((q) => q.windows.map((w) => ({ provider: q.provider, ...w }))).find((w) => w.usedPercent >= QUOTA_STOP_PERCENT);
+      const full = quota.filter((q) => used.includes(q.provider)).flatMap((q) => q.windows.map((w) => ({ provider: q.provider, ...w }))).find((w) => w.usedPercent >= QUOTA_STOP_PERCENT);
       if (full !== undefined) return json(res, 409, { error: `quota is almost used up (${full.provider} ${full.label}: ${String(full.usedPercent)}%); nothing was started` });
-      const claudeNow = options.claude === undefined ? undefined : await options.claude.diagnose();
+      const claudeNow = options.claude === undefined || !used.includes('claude') ? undefined : await options.claude.diagnose();
       for (const [label, w] of [['5h window', claudeNow?.fiveHour], ['7d window', claudeNow?.sevenDay]] as const) {
         if (w?.usedPercent !== undefined && w.usedPercent >= QUOTA_STOP_PERCENT) return json(res, 409, { error: `quota is almost used up (claude ${label}: ${String(w.usedPercent)}%); nothing was started` });
       }
       const timeoutSec = obj(body)?.['timeoutSec'];
       const perStep = (typeof timeoutSec === 'number' ? timeoutSec : 600) * 1000;
-      manager.start(toRunArgv(built.argv), [{ id: 'plan', provider: 'claude' }, { id: 'review', provider: 'codex' }], options.watchdogMs ?? perStep * 2 + 60_000);
+      manager.start(toRunArgv(built.argv), [{ id: 'plan', provider: used[0] ?? 'claude' }, { id: 'review', provider: used[1] ?? 'codex' }], options.watchdogMs ?? perStep * 2 + 60_000);
       return json(res, 202, manager.snapshot());
     });
   }

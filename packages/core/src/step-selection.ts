@@ -12,12 +12,27 @@ const STEP_PROVIDERS: Readonly<Record<WorkflowName, Readonly<Partial<Record<Sele
   'plan-implement-review': { plan: 'claude', implement: 'codex', review: 'claude' },
 };
 
-/** The selectable steps of a workflow, in order, with the provider each one runs on. */
-export function selectionSteps(workflow: WorkflowName): { step: SelectionStep; provider: SelectionProvider }[] {
+/** Steps whose provider the user may choose. Implementation stays on Codex: there is no safe Claude write runner. */
+export const PROVIDER_CHOICE_STEPS: readonly SelectionStep[] = ['plan', 'review'];
+
+export function isSelectionProvider(value: string): value is SelectionProvider {
+  return value === 'claude' || value === 'codex';
+}
+
+/** The provider a step runs on when the user does not choose one. */
+export function defaultProvider(workflow: WorkflowName, step: SelectionStep): SelectionProvider | undefined {
+  return STEP_PROVIDERS[workflow][step];
+}
+
+/**
+ * The selectable steps of a workflow, in order, with the provider each one runs on: the one chosen in
+ * `requests` (`--step-provider`), otherwise the workflow's default.
+ */
+export function selectionSteps(workflow: WorkflowName, requests?: StepRequests): { step: SelectionStep; provider: SelectionProvider }[] {
   const providers = STEP_PROVIDERS[workflow];
   return SELECTION_STEPS.flatMap((step) => {
     const provider = providers[step];
-    return provider === undefined ? [] : [{ step, provider }];
+    return provider === undefined ? [] : [{ step, provider: requests?.[step]?.provider ?? provider }];
   });
 }
 
@@ -30,6 +45,8 @@ export function isModelId(value: string): boolean {
 /** One step's request and whether each part came from a flag (otherwise the provider default is kept). */
 export interface StepRequest {
   readonly request: SelectionRequest;
+  /** Set only when the user chose the provider (`--step-provider step=claude|codex`); absent means the workflow default. */
+  readonly provider?: SelectionProvider;
   readonly modelFromFlag: boolean;
   readonly effortFromFlag: boolean;
   /** Set by the policy step: what the policy did for this step and why. */
@@ -52,6 +69,8 @@ export interface StepFlags {
   readonly models: readonly string[];
   /** Raw `--step-effort` values: `step=auto|level`. */
   readonly efforts: readonly string[];
+  /** Raw `--step-provider` values: `step=auto|claude|codex`. */
+  readonly providers?: readonly string[];
 }
 
 function splitSetting(flag: string, text: string): { step: string; value: string } | string {
@@ -67,8 +86,8 @@ function splitSetting(flag: string, text: string): { step: string; value: string
  */
 export function buildStepRequests(workflow: WorkflowName, flags: StepFlags): StepRequests | string {
   const steps = selectionSteps(workflow).map((s) => s.step);
-  const collected = new Map<SelectionStep, { model?: string; effort?: string }>();
-  for (const [flag, kind, list] of [['--step-model', 'model', flags.models], ['--step-effort', 'effort', flags.efforts]] as const) {
+  const collected = new Map<SelectionStep, { model?: string; effort?: string; provider?: string }>();
+  for (const [flag, kind, list] of [['--step-model', 'model', flags.models], ['--step-effort', 'effort', flags.efforts], ['--step-provider', 'provider', flags.providers ?? []]] as const) {
     for (const text of list) {
       const parsed = splitSetting(flag, text);
       if (typeof parsed === 'string') return parsed;
@@ -77,7 +96,12 @@ export function buildStepRequests(workflow: WorkflowName, flags: StepFlags): Ste
       if (!steps.includes(step)) return `${flag}: ${workflow} has no ${step} step (steps: ${steps.join(', ')})`;
       const entry = collected.get(step) ?? {};
       if (entry[kind] !== undefined) return `${flag}: ${step} is set more than once`;
-      if (kind === 'model') {
+      if (kind === 'provider') {
+        if (parsed.value !== 'auto' && !isSelectionProvider(parsed.value)) return `${flag}: ${step} needs auto, claude or codex`;
+        if (parsed.value === 'claude' && !PROVIDER_CHOICE_STEPS.includes(step)) {
+          return `${flag}: the ${step} step stays on codex: there is no safe Claude write runner`;
+        }
+      } else if (kind === 'model') {
         if (parsed.value !== 'auto' && !isModelId(parsed.value)) return `${flag}: ${step} needs auto or a model id`;
       } else if (parsed.value === 'ultracode') {
         return `${flag}: ultracode is a work mode, not an effort, and is never selected here`;
@@ -90,7 +114,9 @@ export function buildStepRequests(workflow: WorkflowName, flags: StepFlags): Ste
   const result: Partial<Record<SelectionStep, StepRequest>> = {};
   for (const step of steps) {
     const entry = collected.get(step);
+    const chosen = entry?.provider;
     result[step] = {
+      ...(chosen === 'claude' || chosen === 'codex' ? { provider: chosen } : {}),
       request: { ...DEFAULT_REQUEST, model: entry?.model ?? DEFAULT_REQUEST.model, effort: entry?.effort ?? DEFAULT_REQUEST.effort },
       modelFromFlag: entry?.model !== undefined,
       effortFromFlag: entry?.effort !== undefined,

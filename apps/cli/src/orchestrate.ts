@@ -28,7 +28,7 @@ import {
 import type { PolicyDeps } from './policy.ts';
 import { recordRun } from './outcome-recorder.ts';
 import { applyPolicy } from './policy.ts';
-import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings } from './step-preflight.ts';
+import { preflightSteps, selectionLines, stepDetails, stepOk, stepSelection, stepVerdict, stepWarnings, type StepPreflight } from './step-preflight.ts';
 
 export interface OrchestrateIo {
   readonly out: (text: string) => void;
@@ -91,6 +91,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   let evalGroup: string | undefined;
   const stepModels: string[] = [];
   const stepEfforts: string[] = [];
+  const stepProviders: string[] = [];
   let verifyText: string | undefined;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
   for (let i = 0; i < args.length; i += 1) {
@@ -107,10 +108,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       confirmVerify = true;
     } else if (arg === '--allow-partial-ignored-check') {
       allowPartialIgnored = true;
-    } else if (arg === '--step-model' || arg === '--step-effort') {
+    } else if (arg === '--step-model' || arg === '--step-effort' || arg === '--step-provider') {
       const value = args[(i += 1)];
       if (value === undefined) return `${arg} needs step=value, for example ${arg} plan=auto`;
-      (arg === '--step-model' ? stepModels : stepEfforts).push(value);
+      (arg === '--step-model' ? stepModels : arg === '--step-effort' ? stepEfforts : stepProviders).push(value);
     } else if (arg === '--policy') {
       const value = args[(i += 1)];
       if (value === undefined || !isPolicyName(value)) return `--policy must be one of: ${POLICY_NAMES.join(', ')}`;
@@ -150,7 +151,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   }
   if (workflow === undefined || !isWorkflowName(workflow)) return `--workflow must be one of: ${WORKFLOW_NAMES.join(', ')}`;
   if (task === undefined) return '--task "<text>" is required';
-  const steps = buildStepRequests(workflow, { models: stepModels, efforts: stepEfforts });
+  const steps = buildStepRequests(workflow, { models: stepModels, efforts: stepEfforts, providers: stepProviders });
   if (typeof steps === 'string') return steps;
   if (workflow === 'plan-implement-review') {
     if (cwd !== undefined) return 'plan-implement-review takes --workspace <worktree>, not --cwd';
@@ -186,7 +187,7 @@ export function seconds(ms: number): string {
 
 export function policyLine(policy: PolicyName, quotaNote: string, routing: ModelRouting = 'auto'): string {
   return (
-    `  policy: ${policy}; manual --step-model/--step-effort settings win; it only sets an effort it can verify and never picks a model or ultracode; quota ${quotaNote}\n` +
+    `  policy: ${policy}; manual --step-provider/--step-model/--step-effort settings win; it only sets an effort it can verify and never picks a model or ultracode; quota ${quotaNote}\n` +
     (routing === 'guided'
       ? '  model routing: guided; first the strict benchmark evidence of research, shown on its own; if that is not sufficient, an intent-based choice from the providers\' documented model purposes, the task, the policy and the Codex models listed now, labelled as documentation and not measurement, with its uncertainty; a Claude model is never pinned; otherwise the provider default is kept\n'
       : '') +
@@ -239,6 +240,11 @@ export function formatResult(result: WorkflowResult): string {
   return text;
 }
 
+/** How a read-only step runs, as the dry-run states it: Claude is tool-less, Codex has a read-only sandbox. */
+export function readOnlyMode(pf: StepPreflight): string {
+  return pf.provider === 'claude' ? 'tool-less, no session persistence' : `read-only sandbox, git ${pf.codex?.git ?? 'unknown'}`;
+}
+
 export async function runOrchestrateCommand(args: OrchestrateArgs, io: OrchestrateIo, deps: OrchestrateDeps): Promise<number> {
   if (args.workflow !== 'plan-review') {
     io.error(`${args.workflow} is run by its own command path\n`);
@@ -253,7 +259,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
   const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting, args.evalGroup);
   const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, reviewPf] = pfs;
-  if (planPf?.claude === undefined || reviewPf?.codex === undefined) throw new Error('plan-review needs a claude and a codex step');
+  if (planPf === undefined || reviewPf === undefined) throw new Error('plan-review needs a plan and a review step');
   const ready = pfs.every(stepOk);
   if (args.dryRun) {
     const required = ['--confirm', ...(pfs.some((p) => stepSelection(p).issues.length > 0) ? ['--accept-unverified'] : [])];
@@ -262,10 +268,10 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
         `  workflow: ${args.workflow}\n  cwd: ${cwd}\n  timeout: ${String(args.timeoutMs / 1000)}s per step\n` +
         `  task: ${String(args.task.length)} characters\n` +
         policyLine(args.policy, chosen.quotaNote, args.modelRouting) +
-        `  step 1/2 plan [claude]: tool-less, no session persistence, subscription login: ${stepVerdict(planPf)}\n` +
+        `  step 1/2 plan [${planPf.provider}]: ${readOnlyMode(planPf)}, subscription login: ${stepVerdict(planPf)}\n` +
         selectionLines(planPf) +
         stepDetails(planPf) +
-        `  step 2/2 review [codex]: read-only sandbox, git ${reviewPf.codex.git}, subscription login: ${stepVerdict(reviewPf)}\n` +
+        `  step 2/2 review [${reviewPf.provider}]: ${readOnlyMode(reviewPf)}, subscription login: ${stepVerdict(reviewPf)}\n` +
         selectionLines(reviewPf) +
         stepDetails(reviewPf) +
         `  data flow: step 1 output (at most ${String(MAX_HANDOFF_CHARS)} characters) is passed to step 2 as untrusted data\n` +
@@ -284,13 +290,15 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     return 1;
   }
   io.error(
-    `orchestrating ${args.workflow} in ${cwd} (claude plans, codex reviews read-only; no retries, no fallback)\n` + pfs.map(stepWarnings).join(''),
+    `orchestrating ${args.workflow} in ${cwd} (${planPf.provider} plans, ${reviewPf.provider} reviews; no retries, no fallback)\n` + pfs.map(stepWarnings).join(''),
   );
   const steps = planReviewSteps({
     task: args.task,
     cwd,
     claudeSelection: stepSelection(planPf),
     codexSelection: stepSelection(reviewPf),
+    planChoice: { provider: planPf.provider, selection: stepSelection(planPf) },
+    reviewChoice: { provider: reviewPf.provider, selection: stepSelection(reviewPf) },
     timeoutMs: args.timeoutMs,
     ...(deps.runner === undefined ? {} : { runner: deps.runner }),
     ...(deps.env === undefined ? {} : { env: deps.env }),

@@ -27,7 +27,7 @@ export async function startGui(args: readonly string[], io: Io, deps: { readonly
     io.error('gui: could not listen on that port\n');
     return 1;
   }
-  io.out(`Agent Control Lab GUI (preview; real plan-review runs need preview + confirmation): http://127.0.0.1:${String(bound)}/\nPress Ctrl+C to stop. Nothing is stored.\n`);
+  io.out(`Agent Control Lab GUI (real runs need a matching preview and explicit confirmation): http://127.0.0.1:${String(bound)}/\nPress Ctrl+C to stop. Nothing is stored.\n`);
   await new Promise<void>((resolve) => {
     if (deps.signal.aborted) resolve();
     deps.signal.addEventListener('abort', () => {

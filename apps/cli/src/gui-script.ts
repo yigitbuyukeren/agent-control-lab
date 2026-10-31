@@ -91,7 +91,7 @@ function buildRun(){
  R.view=h('div',{class:'view'},h('div',{class:'grid'},
   h('div',{class:'stack'},
    h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Görev'),h('p',{class:'hint'},'Metin yalnızca bellekte tutulur; hiçbir yere kaydedilmez.'),R.task,h('div',{class:'meta'},R.count,h('span',{},'⌘/Ctrl + Enter ile önizle'))),
-   h('section',{class:'card lockable'},h('h2',{},IC('flow'),'Akış'),h('p',{class:'hint'},'Her adım için model ve eforu elle seçebilirsiniz; elle seçim her zaman yönlendirmeden önce gelir.'),R.wf,h('div',{style:null,class:'sp'}),R.flow),
+   h('section',{class:'card lockable fc'},h('h2',{},IC('flow'),'Akış'),h('p',{class:'hint'},'Her adım için model ve eforu elle seçebilirsiniz; elle seçim her zaman yönlendirmeden önce gelir.'),R.wf,h('div',{style:null,class:'sp'}),R.flow),
    R.runOut,R.out),
   h('aside',{class:'stack'},
    h('section',{class:'card lockable'},h('h2',{},IC('spark'),'Model yönlendirme'),h('p',{class:'hint'},'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez.'),R.routes),
@@ -168,7 +168,7 @@ async function preview(){
  const key=paramsKey();
  S.busy=true;R.go.disabled=true;R.go.lastChild.textContent='Önizleniyor…';
  try{S.result=await api('/api/dry-run',{method:'POST',body:key});
-  S.previewKey=(S.result.exitCode===0&&S.result.view.verdict==='would-run')?key:null;
+  S.previewKey=(S.result.exitCode===0&&S.result.view.verdict==='would-run'&&S.result.runnable===true)?key:null;
   drawFlow();drawResult();R.out.scrollIntoView({behavior:'smooth',block:'nearest'})}
  catch(e){toast(String(e.message||e))}
  finally{S.busy=false;R.go.disabled=runActive();R.go.lastChild.textContent='Önizle (dry run)'}}
@@ -182,7 +182,7 @@ function drawRunBtn(){const pw=S.workflow==='plan-implement-review',act=runActiv
  const dir=(pw?R.ws.value:R.cwd.value).trim()!=='';
  const ready=!!S.result&&S.result.exitCode===0&&S.result.view.verdict==='would-run'&&S.previewKey===paramsKey()&&dir&&!act;
  R.runBtn.disabled=!ready;
- R.runNote.textContent=act?'Bir koşu sürüyor; aynı anda yalnızca bir koşu çalışır.':ready?(pw?'Önizleme geçti. Gerçek çalıştırma ayrıca açık yazma onayı ister'+(R.verify.value.trim()?' (test komutu için ayrı onayla)':'')+'.':'Önizleme geçti. Gerçek çalıştırma ayrıca açık onay ister.'):!dir?(pw?'Önce çalışma ağacını seçin.':'Önce proje dizinini seçin.'):'Gerçek çalıştırma için aynı ayarlarla geçen bir önizleme gerekir.'}
+ R.runNote.textContent=act?'Bir koşu sürüyor; aynı anda yalnızca bir koşu çalışır.':ready?(pw?'Önizleme geçti. Gerçek çalıştırma ayrıca açık yazma onayı ister'+(R.verify.value.trim()?' (test komutu için ayrı onayla)':'')+'.':'Önizleme geçti. Gerçek çalıştırma ayrıca açık onay ister.'):!dir?(pw?'Önce çalışma ağacını seçin.':'Önce proje dizinini seçin.'):(S.result&&S.result.exitCode===0&&S.result.view.verdict==='would-run'&&S.result.runnable===false)?'Önizleme geçti ama çalışma ağacının durumu okunamadı; gerçek çalıştırma kapalı.':'Gerçek çalıştırma için aynı ayarlarla geçen bir önizleme gerekir.'}
 function setLocked(on){R.view.querySelectorAll('.lockable').forEach((e)=>{e.inert=on;e.style.opacity=on?'.65':''});R.go.disabled=on||S.busy}
 function updateNodes(){document.querySelectorAll('.node').forEach((n)=>{const el=n.querySelector('.rstat');if(!el)return;const id=el.dataset.step;const st=S.run&&S.run.steps.find((x)=>x.id===id);
  n.classList.toggle('running',!!st&&st.status==='running');el.replaceChildren();if(!st)return;
@@ -241,14 +241,14 @@ function confirmRun(){if(!S.result)return;const v=S.result.view;const dlg=h('dia
  const pv=(id)=>{const s=v.steps.find((x)=>x.id===id);return s?PN[s.provider]||s.provider:'?'};
  const facts=pw?[['Çalışma ağacı',R.ws.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['Uygulama (Codex, YAZAR)',stp('implement')],['İnceleme ('+pv('review')+')',stp('review')],['Test komutu',vcmd||'yok']]
   :[['Proje dizini',R.cwd.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['İnceleme ('+pv('review')+')',stp('review')]];
- dlg.append(h('h2',{id:'dlgt'},IC('alert'),'Gerçek çalıştırmayı onayla'),
+ dlg.append(...[h('h2',{id:'dlgt'},IC('alert'),'Gerçek çalıştırmayı onayla'),
   h('div',{class:'facts'},...facts.map((f)=>h('div',{},h('span',{class:'k'},f[0]),h('code',{},f[1]))),
    h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q)),S.accept?h('div',{},h('span',{class:'k'},'Doğrulanamayan ayarlar'),h('code',{},'KABUL EDİLDİ (--accept-unverified) — gerçek koşuya aktarılır')):null),
   h('p',{class:'why'},pw?'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Codex yalnızca seçtiğiniz bağlı çalışma ağacına yazar; ana ağaç, commit, push, dal değişikliği ve korumalı yollar yasaktır ve her adımdan sonra Git ile denetlenir. İptal ederseniz o ana kadar yazılanlar geri alınmaz. API anahtarı, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.':'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Claude araçsız planlar, Codex salt okunur inceler; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
   h('label',{class:'switch',for:'c1'},c1,h('span',{},pw?'Codex’in bu çalışma ağacına dosya yazmasını açıkça onaylıyorum.':'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
   c3?h('label',{class:'switch',for:'c3'},c3,h('span',{},'“'+vcmd+'” komutunun yeni yazılan kodu model korumasının dışında çalıştırmasını ayrıca onaylıyorum.')):null,
   c2?h('label',{class:'switch',for:'c2'},c2,h('span',{},'Doğrulanamayan ayarları (örn. proxy/TLS değişkenlerinin Claude’a iletilmemesi) gerçek çalıştırma için de kendim kabul ediyorum: --accept-unverified bu koşuya aktarılacak ve o ön kontrol uyarıları aşılacak.')):null,
-  h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go));
+  h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go)].filter((x)=>x!==null));
  document.body.append(dlg);dlg.addEventListener('close',()=>{dlg.remove()});dlg.showModal()}
 async function browse(path,target){
  const pick=target===R.ws?R.wsPicker:R.picker;

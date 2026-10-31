@@ -430,7 +430,8 @@ describe('real plan-implement-review run gate', () => {
     expect(m.calls.some((c) => c.includes('--confirm-write'))).toBe(false);
     const bad = make({ fingerprint: () => 'unreadable' });
     const b = await boot(bad);
-    await b.api('/api/dry-run', body());
+    const shown = (await (await b.api('/api/dry-run', body())).json()) as { runnable: boolean };
+    expect(shown.runnable).toBe(false); // the page keeps its run button disabled
     expect((await b.api('/api/run', body(OK))).status).toBe(409); // unreadable workspace is never previewed as runnable
     expect(bad.calls.some((c) => c.includes('--confirm-write'))).toBe(false);
   });
@@ -439,7 +440,7 @@ describe('real plan-implement-review run gate', () => {
     let fp = 'fp1';
     const m = make({ fingerprint: () => fp });
     const { api, settle } = await boot(m);
-    await api('/api/dry-run', body());
+    expect(((await (await api('/api/dry-run', body())).json()) as { runnable: boolean }).runnable).toBe(true);
     fp = 'fp2';
     const res = await api('/api/run', body(OK));
     expect(res.status).toBe(409);

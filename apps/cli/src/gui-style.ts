@@ -110,5 +110,8 @@ pre.refusal{border:1px solid rgba(255,107,122,.4);border-radius:10px;background:
 @media(max-width:760px){.app{grid-template-columns:1fr;grid-template-rows:56px 1fr 62px}.nav{grid-row:3;grid-column:1;flex-direction:row;height:auto;position:fixed;top:auto;bottom:0;left:0;right:0;z-index:6;border-right:0;border-top:1px solid var(--line);padding:6px;justify-content:space-around;background:rgba(10,11,16,.92)}
 .brand,.navfoot{display:none}.navbtn{flex-direction:column;gap:2px;font-size:11px;padding:6px 12px;text-align:center}.navbtn[aria-current=page]{box-shadow:none}.top{grid-column:1;padding:0 14px}main{grid-column:1;padding:16px 14px 84px}
 .top .pill:not(.safe){display:none}.top h1{font-size:14px}.top .pill.safe{padding:3px 9px}.flow{flex-direction:column;overflow:visible}.node{min-width:0}.link{flex:0 0 22px;width:2px;height:22px;align-self:center;background:repeating-linear-gradient(180deg,var(--line2) 0 5px,transparent 5px 9px)}.link.live{background-image:repeating-linear-gradient(180deg,var(--acc2) 0 5px,transparent 5px 9px)}}
+/* The step flow stacks when its own card is narrow, not only on small screens. */
+.fc{container-type:inline-size}
+@container (max-width:720px){.flow{flex-direction:column;overflow:visible}.node{min-width:0}.link{flex:0 0 22px;width:2px;height:22px;align-self:center;background:repeating-linear-gradient(180deg,var(--line2) 0 5px,transparent 5px 9px)}.link.live{background-image:repeating-linear-gradient(180deg,var(--acc2) 0 5px,transparent 5px 9px)}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 `;

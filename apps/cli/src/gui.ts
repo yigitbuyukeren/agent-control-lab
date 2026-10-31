@@ -397,6 +397,7 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
         output = maskSecrets(output, [token]);
         errors = maskSecrets(errors, [token]);
         const view = parseDryRun(output);
+        let runnable = false;
         if (exitCode === 0 && view.verdict === 'would-run') {
           const wsIndex = built.argv.indexOf('--workspace');
           const state = wsIndex < 0 ? undefined : await probe.read(built.argv[wsIndex + 1] ?? '');
@@ -405,9 +406,11 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
             for (const [k, v] of previews) if (v.expiry < now()) previews.delete(k);
             if (previews.size >= 20) previews.clear();
             previews.set(previewKey(built.argv), { expiry: now() + PREVIEW_TTL_MS, ...(state === undefined ? {} : { fingerprint: state.fingerprint }) });
+            runnable = true;
           }
         }
-        return json(res, 200, { exitCode, output, errors, view });
+        // `runnable` is true only when a real run could follow: the CLI said it would run and, for a write workflow, the worktree state could be read.
+        return json(res, 200, { exitCode, output, errors, view, runnable });
       });
     }
     return json(res, 404, { error: 'not found' });

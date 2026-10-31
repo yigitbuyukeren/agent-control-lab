@@ -366,11 +366,11 @@ edit files and use the terminal, within these profiles. There is no unrestricted
 |---|---|---|---|
 | `text-only` | plan, review | no tools (legacy mode) | not available |
 | `read-only` (default) | plan, review | Read/Grep/Glob plus exact git inspection commands | read-only sandbox |
-| `workspace-write` (default) | implement only | adds Edit/Write; terminal also gets the confirmed `--verify-command` | workspace-write sandbox |
+| `workspace-write` (default) | implement only | adds Edit/Write; terminal stays git-inspection only (the confirmed `--verify-command` runs solely as the local verify step after inspection) | workspace-write sandbox |
 
 Claude runs with `--restricted --safe-mode --permission-mode dontAsk` and an allowlist of exact
 commands (no wildcards): everything not listed is denied, file tools stay inside the working directory,
-and `bypassPermissions` / `--dangerously-skip-permissions` are never built. Writing needs the existing
+and protected files (`.env*`, `.git`, `.github/workflows`, `.claude`, `.codex`, `.husky`, `.npmrc`, `CLAUDE.md`, `AGENTS.md`, ...) are denied for Edit/Write (and secrets/git internals for Read) through Claude permission deny rules before anything runs; the Git inspection afterwards remains a second layer. `bypassPermissions` / `--dangerously-skip-permissions` are never built. Writing needs the existing
 `--workspace` (a verified linked worktree) and `--confirm-write`; the Git inspection, change limits,
 verify gate, quota and preflight checks apply unchanged to either provider. The tooled Claude flags are
 checked against the installed `claude --help` and the run is refused when any is missing.

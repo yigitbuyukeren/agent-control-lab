@@ -14,8 +14,6 @@ export interface AgentRequest {
   readonly selection: Selection;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
-  /** Claude `workspace-write` only: exact extra terminal commands (the confirmed verification command). Codex runs commands inside its own sandbox. */
-  readonly terminal?: readonly string[];
 }
 
 export type AgentDeps = ClaudeRunDeps & CodexRunDeps;
@@ -25,7 +23,7 @@ export async function runAgent(request: AgentRequest, deps: AgentDeps = {}): Pro
   const signal = request.signal === undefined ? {} : { signal: request.signal };
   if (request.provider === 'claude') {
     return runClaude(
-      { task: request.prompt, cwd: request.cwd, selection: request.selection, timeoutMs: request.timeoutMs, policy: { profile: request.profile, ...(request.terminal === undefined ? {} : { terminal: request.terminal }) }, ...signal },
+      { task: request.prompt, cwd: request.cwd, selection: request.selection, timeoutMs: request.timeoutMs, policy: { profile: request.profile }, ...signal },
       deps,
     );
   }

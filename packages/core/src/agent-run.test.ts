@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { runAgent } from './agent-run.ts';
-import { buildClaudePrintArgs, claudeAllowRules } from './claude-run.ts';
+import { buildClaudePrintArgs, claudeAllowRules, claudeProtectedPathRules } from './claude-run.ts';
 import { claudeRegistry } from './models.ts';
 import { PERMISSION_PROFILES, codexSandboxFor, profileProblem } from './permission-profile.ts';
 import type { ProcessSpec } from './process-runner.ts';
@@ -14,17 +14,29 @@ describe('Claude tool profiles', () => {
   it('text-only stays tool-less; tooled profiles never bypass permissions or use wildcards in Bash', () => {
     expect(buildClaudePrintArgs(selection('claude'))).toEqual(expect.arrayContaining(['--tools', '']));
     for (const profile of ['read-only', 'workspace-write'] as const) {
-      const args = buildClaudePrintArgs(selection('claude'), { profile, terminal: ['pnpm test'] });
+      const args = buildClaudePrintArgs(selection('claude'), { profile });
       expect(args).toEqual(expect.arrayContaining(['--restricted', '--permission-mode', 'dontAsk', '--no-session-persistence']));
       expect(args.join(' ')).not.toMatch(/bypass|dangerously|danger-full/i);
-      const rules = claudeAllowRules({ profile, terminal: ['pnpm test'] });
+      const rules = claudeAllowRules({ profile });
       expect(rules.filter((r) => r.startsWith('Bash(')).some((r) => r.includes('*'))).toBe(false);
       expect(rules.includes('Edit')).toBe(profile === 'workspace-write');
-      expect(rules.includes('Bash(pnpm test)')).toBe(profile === 'workspace-write');
     }
   });
-  it('drops terminal commands with shell syntax', () => {
-    expect(claudeAllowRules({ profile: 'workspace-write', terminal: ['pnpm test; id', 'rm -rf $HOME', 'pnpm test *'] }).filter((r) => /pnpm|rm/.test(r))).toEqual([]);
+  it('denies protected paths for Edit/Write/Read before anything runs, using Claude permission rules', () => {
+    const deny = claudeProtectedPathRules();
+    for (const profile of ['read-only', 'workspace-write'] as const) {
+      const args = buildClaudePrintArgs(selection('claude'), { profile });
+      const denied = args.slice(args.indexOf('--disallowedTools') + 1);
+      for (const rule of ['Edit(**/.env)', 'Write(**/.env)', 'Read(**/.env)', 'Edit(**/.env.*)', 'Read(**/.env.*)', 'Edit(.github/workflows/**)', 'Write(.github/workflows/**)', 'Edit(**/.claude/**)', 'Read(**/.claude/**)', 'Edit(**/.git/**)', 'Write(**/.git/**)', 'Read(**/.git/**)', 'Edit(**/.npmrc)', 'Read(**/.npmrc)', 'Edit(**/CLAUDE.md)', 'Edit(**/AGENTS.md)']) {
+        expect(denied).toContain(rule);
+      }
+      expect(denied).toEqual(expect.arrayContaining(deny));
+    }
+  });
+  it('never allows a protected path or a test command, and never allows a rule that overlaps a deny', () => {
+    for (const rule of claudeAllowRules({ profile: 'workspace-write' })) {
+      expect(rule).not.toMatch(/\.env|\.git\/|workflows|\.claude|pnpm|npm|node|\*/);
+    }
   });
 });
 

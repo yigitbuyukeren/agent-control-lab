@@ -62,7 +62,7 @@ export function buildClaudePrintArgs(selection: Selection, policy: ClaudeToolPol
     '--permission-prompts',
     'none',
     // `dontAsk` denies everything that is not pre-approved below; bypassPermissions is never built.
-    ...(tooled ? ['--permission-mode', 'dontAsk', '--allowedTools', ...claudeAllowRules(policy), '--disallowedTools', ...CLAUDE_DENY_RULES] : []),
+    ...(tooled ? ['--permission-mode', 'dontAsk', '--allowedTools', ...claudeAllowRules(policy), '--disallowedTools', ...CLAUDE_DENY_RULES, ...claudeProtectedPathRules()] : []),
     '--output-format',
     'json',
     ...(selection.model.kind === 'explicit' ? ['--model', selection.model.value] : []),
@@ -74,10 +74,9 @@ export function buildClaudePrintArgs(selection: Selection, policy: ClaudeToolPol
   ];
 }
 
-/** Tool access of a Claude step. `terminal` lists extra exact commands (the confirmed verification command). */
+/** Tool access of a Claude step. The terminal is fixed: the verification command is never added here, it runs only in the local verify step after inspection. */
 export interface ClaudeToolPolicy {
   readonly profile: PermissionProfile;
-  readonly terminal?: readonly string[];
 }
 
 /** Exact commands, never wildcards: `git diff *` would also allow `--output=<path>`, a write outside the workspace. */
@@ -99,17 +98,30 @@ export function claudeTools(profile: PermissionProfile): string[] {
   return profile === 'workspace-write' ? ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'] : ['Read', 'Grep', 'Glob', 'Bash'];
 }
 
-const SAFE_TERMINAL_WORD = /^[A-Za-z0-9._:/=@-]+$/;
-
 export function claudeAllowRules(policy: ClaudeToolPolicy): string[] {
-  const terminal = (policy.terminal ?? []).filter((c) => {
-    const words = c.split(' ');
-    return words.length > 0 && words.every((w) => SAFE_TERMINAL_WORD.test(w));
-  });
   return [
     'Read', 'Grep', 'Glob',
     ...(policy.profile === 'workspace-write' ? ['Edit', 'Write'] : []),
-    ...[...CLAUDE_READ_COMMANDS, ...(policy.profile === 'workspace-write' ? terminal : [])].map((c) => `Bash(${c})`),
+    ...CLAUDE_READ_COMMANDS.map((c) => `Bash(${c})`),
+  ];
+}
+
+/**
+ * Official permission rules (gitignore-style paths, relative to the working directory; deny wins over allow),
+ * mirroring `isProtectedPath`. `Edit` rules cover every file-editing tool; `Read` rules cover Read and, best
+ * effort, Grep/Glob. Applied in every tooled profile, before anything runs.
+ */
+const PROTECTED_DIRS = ['.git', '.claude', '.codex', '.husky'];
+const PROTECTED_FILES = ['.env', '.env.*', '.npmrc', '.yarnrc', '.yarnrc.yml', '.pnpmrc', '.gitmodules', '.gitattributes', 'CLAUDE.md', 'AGENTS.md', 'claude.md', 'agents.md'];
+/** Instruction and attribute files may be read (they steer the work) but never edited. */
+const READABLE_PROTECTED = new Set(['.gitmodules', '.gitattributes', 'CLAUDE.md', 'AGENTS.md', 'claude.md', 'agents.md']);
+
+export function claudeProtectedPathRules(): string[] {
+  const dirs = [...PROTECTED_DIRS.map((d) => `**/${d}/**`), '.github/workflows/**'];
+  const files = PROTECTED_FILES.map((f) => `**/${f}`);
+  return [
+    ...[...dirs, ...files].flatMap((p) => [`Edit(${p})`, `Write(${p})`]),
+    ...[...dirs, ...files.filter((_f, i) => !READABLE_PROTECTED.has(PROTECTED_FILES[i] ?? ''))].map((p) => `Read(${p})`),
   ];
 }
 

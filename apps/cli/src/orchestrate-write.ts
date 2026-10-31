@@ -58,8 +58,6 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   const [planPf, implementPf, reviewPf] = pfs;
   if (planPf === undefined || implementPf === undefined || reviewPf === undefined) throw new Error('plan-implement-review needs plan, implement and review steps');
   const ready = prep.ok && atRoot && pfs.every(stepOk);
-  // A Claude implementation may run the verification command itself, but only once it is confirmed.
-  const terminal = args.verify !== undefined && args.confirmVerify === true ? [[args.verify.command, ...args.verify.args].join(' ')] : [];
   const total = args.verify === undefined ? 4 : 5;
   const n = (i: number) => `step ${String(i)}/${String(total)}`;
   const snapshot = prep.ok ? prep.before : prep.reason === 'workspace-rejected' ? prep.snapshot : undefined;
@@ -82,7 +80,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         `  ${n(2)} implement [${implementPf.provider}]: ${
           implementPf.provider === 'codex'
             ? `WRITE sandbox limited to the workspace, git ${implementPf.codex?.git ?? 'unknown'}`
-            : `WRITE tools (Edit/Write confined to the workspace by --restricted; terminal: exact git inspection commands${terminal.length > 0 ? ` and ${terminal[0] ?? ''}` : ' only, no test command'}; everything else denied)`
+            : `WRITE tools (Edit/Write confined to the workspace by --restricted; terminal: exact git inspection commands only, never the test command; protected files (.env*, .git, .github/workflows, .claude, ...) denied before any edit or read; everything else denied)`
         }, subscription login: ${stepVerdict(implementPf)}\n` +
         selectionLines(implementPf) +
         stepDetails(implementPf) +
@@ -136,7 +134,6 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     planChoice: { provider: planPf.provider, selection: stepSelection(planPf), profile: planPf.profile },
     implementChoice: { provider: implementPf.provider, selection: stepSelection(implementPf), profile: 'workspace-write' },
     reviewChoice: { provider: reviewPf.provider, selection: stepSelection(reviewPf), profile: reviewPf.profile },
-    terminal,
     timeoutMs: args.timeoutMs,
     inspect: createWorkspaceInspector({ cwd, before: prep.before, git: gitDeps }),
     ...(verifyCommand === undefined || args.confirmVerify !== true

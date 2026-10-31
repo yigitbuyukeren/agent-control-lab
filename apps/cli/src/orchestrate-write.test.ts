@@ -726,7 +726,7 @@ describe('provider x profile matrix (fake agents, real Git worktree)', () => {
     expect(r.out).toContain('Nothing was committed or pushed');
   });
 
-  it('a Claude implementation gets Edit/Write and exact git commands, and the test command only once confirmed', async () => {
+  it('a Claude implementation gets Edit/Write and exact git commands, and never the confirmed test command', async () => {
     const claude = ['--step-provider', 'implement=claude'];
     const noVerify = await go([...WRITE(), ...claude], { onClaude: (spec) => { editFile()(spec); } });
     const impl = noVerify.specs.filter((s) => s.command === 'claude')[1];
@@ -738,7 +738,9 @@ describe('provider x profile matrix (fake agents, real Git worktree)', () => {
     git(wt, 'clean', '-qfd');
     const withVerify = await go([...WRITE(), ...claude, '--verify-command', 'pnpm test', '--confirm-verify'], { onClaude: (spec) => { editFile()(spec); } });
     const impl2 = withVerify.specs.filter((s) => s.command === 'claude')[1];
-    expect(impl2?.args).toContain('Bash(pnpm test)');
+    expect(impl2?.args.some((a) => a.startsWith('Bash(pnpm'))).toBe(false);
+    // The confirmed command runs only as the local verify step, after the inspection.
+    expect(withVerify.specs.map((s) => s.command)).toEqual(['claude', 'claude', 'pnpm', 'claude']);
   });
 
   it('refuses profiles that could write outside the implementation step or that a provider lacks', async () => {

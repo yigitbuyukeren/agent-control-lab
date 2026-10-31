@@ -35,8 +35,6 @@ export interface PlanReviewOptions {
   readonly reviewSelection?: Selection;
   /** `plan-implement-review` only: provider, selection and profile of the implementation; omitted means Codex with `codexSelection`. */
   readonly implementChoice?: StepChoice;
-  /** `plan-implement-review` only: exact terminal commands a Claude implementation may run (the confirmed verification command). */
-  readonly terminal?: readonly string[];
   /** Applies to each step separately. */
   readonly timeoutMs: number;
   readonly runner?: ProcessRunner;
@@ -135,7 +133,7 @@ const implementReviewInstructions = (profile: PermissionProfile): string => [
 ].join(' ');
 
 const TERMINAL_NOTE = {
-  claude: 'Your terminal is limited to read-only git inspection commands and, if listed by the host, one verification command; anything else is denied.',
+  claude: 'Your terminal is limited to read-only git inspection commands; anything else is denied. Do not try to run tests: the host verifies afterwards.',
   codex: '',
 } as const;
 
@@ -169,7 +167,7 @@ export function planImplementReviewSteps(options: PlanImplementReviewOptions): S
       run: (prompt, signal) => {
         implementStarted = true;
         return runAgent(
-          { provider: implement.provider, profile: 'workspace-write', prompt, cwd: options.cwd, selection: implement.selection, timeoutMs: options.timeoutMs, ...(options.terminal === undefined ? {} : { terminal: options.terminal }), ...(signal === undefined ? {} : { signal }) },
+          { provider: implement.provider, profile: 'workspace-write', prompt, cwd: options.cwd, selection: implement.selection, timeoutMs: options.timeoutMs, ...(signal === undefined ? {} : { signal }) },
           deps,
         );
       },

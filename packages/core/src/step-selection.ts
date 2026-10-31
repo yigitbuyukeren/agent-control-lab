@@ -1,5 +1,6 @@
 import { asEffortLevel } from './models.ts';
 import { DEFAULT_REQUEST, type SelectionRequest } from './selection.ts';
+import { DEFAULT_PROFILE, isPermissionProfile, profileProblem, type PermissionProfile } from './permission-profile.ts';
 import type { WorkflowName } from './workflows.ts';
 
 /** Steps whose model and effort the user can choose. Local steps (inspect, verify) have no model. */
@@ -12,8 +13,8 @@ const STEP_PROVIDERS: Readonly<Record<WorkflowName, Readonly<Partial<Record<Sele
   'plan-implement-review': { plan: 'claude', implement: 'codex', review: 'claude' },
 };
 
-/** Steps whose provider the user may choose. Implementation stays on Codex: there is no safe Claude write runner. */
-export const PROVIDER_CHOICE_STEPS: readonly SelectionStep[] = ['plan', 'review'];
+/** Every selectable step may run on either provider: both have a permission-profiled runner. */
+export const PROVIDER_CHOICE_STEPS: readonly SelectionStep[] = SELECTION_STEPS;
 
 export function isSelectionProvider(value: string): value is SelectionProvider {
   return value === 'claude' || value === 'codex';
@@ -47,6 +48,8 @@ export interface StepRequest {
   readonly request: SelectionRequest;
   /** Set only when the user chose the provider (`--step-provider step=claude|codex`); absent means the workflow default. */
   readonly provider?: SelectionProvider;
+  /** Set only when the user chose the permission profile (`--step-profile step=...`); absent means the step's default. */
+  readonly profile?: PermissionProfile;
   readonly modelFromFlag: boolean;
   readonly effortFromFlag: boolean;
   /** Set by the policy step: what the policy did for this step and why. */
@@ -71,6 +74,13 @@ export interface StepFlags {
   readonly efforts: readonly string[];
   /** Raw `--step-provider` values: `step=auto|claude|codex`. */
   readonly providers?: readonly string[];
+  /** Raw `--step-profile` values: `step=auto|text-only|read-only|workspace-write`. */
+  readonly profiles?: readonly string[];
+}
+
+/** The permission profile a step runs with: the chosen one, otherwise the step's default. */
+export function stepProfile(requests: StepRequests, step: SelectionStep): PermissionProfile {
+  return requests[step]?.profile ?? DEFAULT_PROFILE[step];
 }
 
 function splitSetting(flag: string, text: string): { step: string; value: string } | string {
@@ -86,8 +96,8 @@ function splitSetting(flag: string, text: string): { step: string; value: string
  */
 export function buildStepRequests(workflow: WorkflowName, flags: StepFlags): StepRequests | string {
   const steps = selectionSteps(workflow).map((s) => s.step);
-  const collected = new Map<SelectionStep, { model?: string; effort?: string; provider?: string }>();
-  for (const [flag, kind, list] of [['--step-model', 'model', flags.models], ['--step-effort', 'effort', flags.efforts], ['--step-provider', 'provider', flags.providers ?? []]] as const) {
+  const collected = new Map<SelectionStep, { model?: string; effort?: string; provider?: string; profile?: string }>();
+  for (const [flag, kind, list] of [['--step-model', 'model', flags.models], ['--step-effort', 'effort', flags.efforts], ['--step-provider', 'provider', flags.providers ?? []], ['--step-profile', 'profile', flags.profiles ?? []]] as const) {
     for (const text of list) {
       const parsed = splitSetting(flag, text);
       if (typeof parsed === 'string') return parsed;
@@ -98,9 +108,8 @@ export function buildStepRequests(workflow: WorkflowName, flags: StepFlags): Ste
       if (entry[kind] !== undefined) return `${flag}: ${step} is set more than once`;
       if (kind === 'provider') {
         if (parsed.value !== 'auto' && !isSelectionProvider(parsed.value)) return `${flag}: ${step} needs auto, claude or codex`;
-        if (parsed.value === 'claude' && !PROVIDER_CHOICE_STEPS.includes(step)) {
-          return `${flag}: the ${step} step stays on codex: there is no safe Claude write runner`;
-        }
+      } else if (kind === 'profile') {
+        if (parsed.value !== 'auto' && !isPermissionProfile(parsed.value)) return `${flag}: ${step} needs auto, text-only, read-only or workspace-write`;
       } else if (kind === 'model') {
         if (parsed.value !== 'auto' && !isModelId(parsed.value)) return `${flag}: ${step} needs auto or a model id`;
       } else if (parsed.value === 'ultracode') {
@@ -115,8 +124,15 @@ export function buildStepRequests(workflow: WorkflowName, flags: StepFlags): Ste
   for (const step of steps) {
     const entry = collected.get(step);
     const chosen = entry?.provider;
+    const profile = entry?.profile !== undefined && isPermissionProfile(entry.profile) ? entry.profile : undefined;
+    if (profile !== undefined) {
+      const effective = chosen === 'claude' || chosen === 'codex' ? chosen : STEP_PROVIDERS[workflow][step];
+      const problem = effective === undefined ? undefined : profileProblem(step, effective, profile);
+      if (problem !== undefined) return `--step-profile: ${problem}`;
+    }
     result[step] = {
       ...(chosen === 'claude' || chosen === 'codex' ? { provider: chosen } : {}),
+      ...(profile === undefined ? {} : { profile }),
       request: { ...DEFAULT_REQUEST, model: entry?.model ?? DEFAULT_REQUEST.model, effort: entry?.effort ?? DEFAULT_REQUEST.effort },
       modelFromFlag: entry?.model !== undefined,
       effortFromFlag: entry?.effort !== undefined,

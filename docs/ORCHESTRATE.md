@@ -354,3 +354,24 @@ The live log keeps the newest 400 masked lines. The cursor is an absolute line c
 ## GUI: real plan-implement-review
 
 The GUI runs `plan-implement-review` through the same CLI path (`--confirm-write`, plus `--confirm-verify` only for a test command). Required: a successful dry-run preview of exactly the same settings; the worktree unchanged since that preview (head, branches, dirty and ignored files are fingerprinted with read-only Git calls); its own explicit write confirmation; a separate confirmation for the test command; and the usual CLI preflight/inspect checks and quota guard (the Codex implementation always counts toward Codex quota). One run at a time; cancel stops the processes, `inspect` still runs and nothing is rolled back. After the run the page shows the workspace state read from Git (branch, HEAD before/after, changed and new files, whether anything was committed), not model text.
+
+## Providers and permission profiles per step
+
+Every step (plan, implement, review) can run on Claude or Codex (`--step-provider step=claude|codex`),
+with its own model, effort (`--step-model`, `--step-effort`) and permission profile
+(`--step-profile step=auto|text-only|read-only|workspace-write`). Both providers can read the project,
+edit files and use the terminal, within these profiles. There is no unrestricted profile.
+
+| Profile | Allowed in | Claude | Codex |
+|---|---|---|---|
+| `text-only` | plan, review | no tools (legacy mode) | not available |
+| `read-only` (default) | plan, review | Read/Grep/Glob plus exact git inspection commands | read-only sandbox |
+| `workspace-write` (default) | implement only | adds Edit/Write; terminal also gets the confirmed `--verify-command` | workspace-write sandbox |
+
+Claude runs with `--restricted --safe-mode --permission-mode dontAsk` and an allowlist of exact
+commands (no wildcards): everything not listed is denied, file tools stay inside the working directory,
+and `bypassPermissions` / `--dangerously-skip-permissions` are never built. Writing needs the existing
+`--workspace` (a verified linked worktree) and `--confirm-write`; the Git inspection, change limits,
+verify gate, quota and preflight checks apply unchanged to either provider. The tooled Claude flags are
+checked against the installed `claude --help` and the run is refused when any is missing.
+The tooled behaviour was verified against flag definitions and fake agents only; no real model was called.

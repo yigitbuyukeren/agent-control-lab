@@ -7,7 +7,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const cli = fileURLToPath(new URL('../bin/agent-control-lab.js', import.meta.url));
 const windows = process.platform === 'win32';
-const ALL_FLAGS = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'];
+const ALL_FLAGS = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--permission-mode <mode>', '--allowedTools <tools...>', '--disallowedTools <tools...>', '--output-format <format>', '--model <model>', '--effort <level>'];
 const SUBSCRIPTION = { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: 'pro', email: 'me@example.com' };
 const SECRET_VALUES = ['sk-ant-SECRET', 'evil.example', 'steal.sh', 'proxy.example'];
 

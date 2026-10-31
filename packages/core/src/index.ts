@@ -55,6 +55,8 @@ export * from './git-preflight.ts';
 export * from './claude-run.ts';
 export * from './claude-settings.ts';
 export * from './repo-roots.ts';
+export * from './permission-profile.ts';
+export * from './agent-run.ts';
 export * from './orchestration.ts';
 export * from './workflows.ts';
 export * from './git-state.ts';

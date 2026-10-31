@@ -92,6 +92,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   const stepModels: string[] = [];
   const stepEfforts: string[] = [];
   const stepProviders: string[] = [];
+  const stepProfiles: string[] = [];
   let verifyText: string | undefined;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
   for (let i = 0; i < args.length; i += 1) {
@@ -108,10 +109,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       confirmVerify = true;
     } else if (arg === '--allow-partial-ignored-check') {
       allowPartialIgnored = true;
-    } else if (arg === '--step-model' || arg === '--step-effort' || arg === '--step-provider') {
+    } else if (arg === '--step-model' || arg === '--step-effort' || arg === '--step-provider' || arg === '--step-profile') {
       const value = args[(i += 1)];
       if (value === undefined) return `${arg} needs step=value, for example ${arg} plan=auto`;
-      (arg === '--step-model' ? stepModels : arg === '--step-effort' ? stepEfforts : stepProviders).push(value);
+      (arg === '--step-model' ? stepModels : arg === '--step-effort' ? stepEfforts : arg === '--step-profile' ? stepProfiles : stepProviders).push(value);
     } else if (arg === '--policy') {
       const value = args[(i += 1)];
       if (value === undefined || !isPolicyName(value)) return `--policy must be one of: ${POLICY_NAMES.join(', ')}`;
@@ -151,7 +152,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   }
   if (workflow === undefined || !isWorkflowName(workflow)) return `--workflow must be one of: ${WORKFLOW_NAMES.join(', ')}`;
   if (task === undefined) return '--task "<text>" is required';
-  const steps = buildStepRequests(workflow, { models: stepModels, efforts: stepEfforts, providers: stepProviders });
+  const steps = buildStepRequests(workflow, { models: stepModels, efforts: stepEfforts, providers: stepProviders, profiles: stepProfiles });
   if (typeof steps === 'string') return steps;
   if (workflow === 'plan-implement-review') {
     if (cwd !== undefined) return 'plan-implement-review takes --workspace <worktree>, not --cwd';
@@ -242,7 +243,10 @@ export function formatResult(result: WorkflowResult): string {
 
 /** How a read-only step runs, as the dry-run states it: Claude is tool-less, Codex has a read-only sandbox. */
 export function readOnlyMode(pf: StepPreflight): string {
-  return pf.provider === 'claude' ? 'tool-less, no session persistence' : `read-only sandbox, git ${pf.codex?.git ?? 'unknown'}`;
+  if (pf.provider === 'codex') return `read-only sandbox, git ${pf.codex?.git ?? 'unknown'}`;
+  return pf.profile === 'text-only'
+    ? 'tool-less, no session persistence'
+    : 'read-only tools (Read/Grep/Glob and exact git inspection commands; every write and other command denied), no session persistence';
 }
 
 export async function runOrchestrateCommand(args: OrchestrateArgs, io: OrchestrateIo, deps: OrchestrateDeps): Promise<number> {
@@ -275,7 +279,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
         selectionLines(reviewPf) +
         stepDetails(reviewPf) +
         `  data flow: step 1 output (at most ${String(MAX_HANDOFF_CHARS)} characters) is passed to step 2 as untrusted data\n` +
-        '  guarantees: no retries, no provider fallback, no API keys, no file changes by either step, ultracode never selected\n' +
+        '  guarantees: no retries, no provider fallback, no API keys, no file changes by either step (no write profile exists in this workflow), ultracode never selected\n' +
         `  managed policy: ${MANAGED_POLICY_LIMIT}\n` +
         `  requires: ${required.join(', ')}\n` +
         `  verdict: ${ready ? 'would run' : 'would refuse'}\n`,
@@ -297,8 +301,8 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     cwd,
     claudeSelection: stepSelection(planPf),
     codexSelection: stepSelection(reviewPf),
-    planChoice: { provider: planPf.provider, selection: stepSelection(planPf) },
-    reviewChoice: { provider: reviewPf.provider, selection: stepSelection(reviewPf) },
+    planChoice: { provider: planPf.provider, selection: stepSelection(planPf), profile: planPf.profile },
+    reviewChoice: { provider: reviewPf.provider, selection: stepSelection(reviewPf), profile: reviewPf.profile },
     timeoutMs: args.timeoutMs,
     ...(deps.runner === undefined ? {} : { runner: deps.runner }),
     ...(deps.env === undefined ? {} : { env: deps.env }),

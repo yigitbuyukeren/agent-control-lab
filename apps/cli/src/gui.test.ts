@@ -57,17 +57,22 @@ describe('buildDryRunArgv', () => {
       expect('error' in buildDryRunArgv(bad)).toBe(true);
     }
   });
-  it('passes provider choices and rejects invalid ones, including Claude for implement', () => {
+  it('passes provider choices and rejects invalid ones, and allows Claude for implement', () => {
     const ok = buildDryRunArgv({ ...good, steps: { providers: { plan: 'codex', review: 'claude' } } });
     if ('error' in ok) throw new Error(ok.error);
     expect(ok.argv).toEqual(expect.arrayContaining(['--step-provider', 'plan=codex', '--step-provider', 'review=claude']));
     expect(chosenProviders(ok.argv)).toEqual(['codex', 'claude']);
     expect(chosenProviders(['orchestrate'])).toEqual(['claude', 'codex']);
     const wf = { ...good, workflow: 'plan-implement-review', workspace: '/w' };
-    for (const bad of [{ implement: 'claude' }, { plan: 'gemini' }, { plan: '--confirm' }, { verify: 'codex' }, { implement: 5 }]) {
+    for (const bad of [{ plan: 'gemini' }, { plan: '--confirm' }, { verify: 'codex' }, { implement: 5 }]) {
       expect('error' in buildDryRunArgv({ ...wf, steps: { providers: bad } })).toBe(true);
     }
     expect('error' in buildDryRunArgv({ ...wf, steps: { providers: { implement: 'codex', review: 'codex' } } })).toBe(false);
+    const claudeImpl = buildDryRunArgv({ ...wf, steps: { providers: { implement: 'claude' }, profiles: { plan: 'text-only', review: 'read-only' } } });
+    if ('error' in claudeImpl) throw new Error(claudeImpl.error);
+    expect(claudeImpl.argv).toEqual(expect.arrayContaining(['--step-provider', 'implement=claude', '--step-profile', 'plan=text-only']));
+    expect(chosenProviders(claudeImpl.argv, 'plan-implement-review')).toEqual(['claude', 'claude', 'claude']);
+    for (const bad of [{ plan: 'full-access' }, { plan: 5 }, { gemini: 'read-only' }]) expect('error' in buildDryRunArgv({ ...wf, steps: { profiles: bad } })).toBe(true);
   });
   it('passes step settings and the write workflow workspace only as dry-run values', () => {
     const built = buildDryRunArgv({ workflow: 'plan-implement-review', task: 't', routing: 'auto', policy: 'balanced', steps: { models: { implement: 'gpt-x' }, efforts: { review: 'high' } }, workspace: '/w', verify: 'pnpm test' });

@@ -10,6 +10,7 @@ import {
   detectProvider,
   discoverCodexModels,
   missingClaudeFlags,
+  TOOLED_CLAUDE_FLAGS,
   parseClaudeHelp,
   planClaudeRun,
   planCodexRun,
@@ -27,6 +28,7 @@ import {
   type Selection,
   type SelectionRequest,
   type SettingsScan,
+  type PermissionProfile,
 } from '@agent-control-lab/core';
 
 /** The parts of the CLI dependencies the read-only preflights need. */
@@ -47,6 +49,8 @@ export interface PreflightInput {
   readonly acceptUnverified: boolean;
   /** Validated working directory. */
   readonly cwd: string;
+  /** Claude only; defaults to tool-less. */
+  readonly profile?: PermissionProfile;
 }
 
 export interface ClaudePreflight {
@@ -81,7 +85,8 @@ export async function claudePreflight(input: PreflightInput, deps: PreflightDeps
     ...(input.request.model === 'auto' ? [] : ['--model']),
     ...(input.request.effort === 'auto' && input.request.mode === 'normal' ? [] : ['--effort']),
   ];
-  const missingFlags = help.kind === 'ok' ? missingClaudeFlags(help.stdout, extraFlags) : undefined;
+  const tooled = (input.profile ?? 'text-only') !== 'text-only';
+  const missingFlags = help.kind === 'ok' ? missingClaudeFlags(help.stdout, [...extraFlags, ...(tooled ? TOOLED_CLAUDE_FLAGS : [])]) : undefined;
   const networkRedirects = redirectingEnvNames(env);
   const plan = planClaudeRun({
     task: input.task,

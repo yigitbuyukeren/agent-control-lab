@@ -338,7 +338,7 @@ describe('cli', () => {
 
   describe('run --provider claude', () => {
     const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
-    const FULL_HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
+    const FULL_HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--permission-mode <mode>', '--allowedTools <tools...>', '--disallowedTools <tools...>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
     const claudeExec = (auth: { stdout: string; kind?: 'ok' | 'failed' | 'not-found' }, version = '2.1.312 (Claude Code)', help = FULL_HELP): Exec => (command, args) => {
       if (command !== 'claude') return Promise.resolve({ kind: 'not-found' });
       if (args[0] === '--version') return Promise.resolve({ kind: 'ok', stdout: version });

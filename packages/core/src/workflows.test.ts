@@ -48,13 +48,13 @@ describe('plan-review workflow', () => {
     expect(workflowSteps('plan-review', { task: 't', cwd: '/r', claudeSelection, codexSelection, timeoutMs: 1 })).toHaveLength(2);
   });
 
-  it('runs the safe runners: tool-less claude, read-only codex, cleaned environments', async () => {
+  it('runs the safe runners: read-only tooled claude, read-only codex, cleaned environments', async () => {
     const { steps, specs } = build([reply('1. do it'), reply('approve')]);
     const result = await executeWorkflow('plan-review', steps);
     expect(result.status).toBe('completed');
     const [claude, codex] = specs;
     expect(claude).toMatchObject({ command: 'claude', cwd: '/repo', timeoutMs: 5000 });
-    expect(claude?.args).toEqual(expect.arrayContaining(['-p', '--tools', '', '--restricted', '--safe-mode', '--no-session-persistence']));
+    expect(claude?.args).toEqual(expect.arrayContaining(['-p', '--tools', 'Read,Grep,Glob,Bash', '--permission-mode', 'dontAsk', '--restricted', '--safe-mode', '--no-session-persistence']));
     expect(codex).toMatchObject({ command: 'codex', cwd: '/repo', timeoutMs: 5000 });
     expect(codex?.args).toEqual(expect.arrayContaining(['exec', '-s', 'read-only', '--ephemeral']));
     expect(Object.keys(codex?.env ?? {})).not.toContain('OPENAI_API_KEY');
@@ -139,7 +139,7 @@ describe('plan-implement-review workflow', () => {
     expect(result.status).toBe('completed');
     expect(specs.map((s) => [s.command, s.cwd])).toEqual([['claude', '/ws'], ['codex', '/ws'], ['claude', '/ws']]);
     expect(specs[1]?.args).toEqual(expect.arrayContaining(['exec', '-s', 'workspace-write', '--ephemeral']));
-    for (const index of [0, 2]) expect(specs[index]?.args).toEqual(expect.arrayContaining(['--tools', '', '--restricted']));
+    for (const index of [0, 2]) expect(specs[index]?.args).toEqual(expect.arrayContaining(['--tools', 'Read,Grep,Glob,Bash', '--permission-mode', 'dontAsk', '--restricted']));
     expect(Object.keys(specs[1]?.env ?? {})).not.toContain('OPENAI_API_KEY');
   });
 

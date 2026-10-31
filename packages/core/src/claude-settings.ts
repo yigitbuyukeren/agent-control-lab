@@ -207,6 +207,9 @@ export const REQUIRED_CLAUDE_FLAGS: readonly string[] = [
   '--no-session-persistence', '--permission-prompts', '--output-format',
 ];
 
+/** Extra flags a tooled profile (read-only, workspace-write) depends on. */
+export const TOOLED_CLAUDE_FLAGS: readonly string[] = ['--permission-mode', '--allowedTools', '--disallowedTools'];
+
 /** Returns the required flags that `claude --help` does not mention. */
 export function missingClaudeFlags(helpText: string, extra: readonly string[] = []): string[] {
   return [...REQUIRED_CLAUDE_FLAGS, ...extra].filter((flag) => !new RegExp(`(^|\\s|,)${flag}(\\s|=|,|$)`, 'm').test(helpText));

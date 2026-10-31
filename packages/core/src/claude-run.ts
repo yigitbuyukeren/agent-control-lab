@@ -4,6 +4,7 @@ import { runProcess, type ProcessRunner } from './process-runner.ts';
 import type { SettingsFinding, SettingsScan } from './claude-settings.ts';
 import type { Selection, SelectionIssue } from './selection.ts';
 import { isModelId } from './step-selection.ts';
+import type { PermissionProfile } from './permission-profile.ts';
 
 /** Lowest Claude Code version verified to accept `--effort ultracode` without a warning. */
 export const MIN_ULTRACODE_VERSION = '2.1.312';
@@ -47,11 +48,12 @@ export function claudeRunEnv(env: Readonly<Record<string, string | undefined>>):
  * `--no-session-persistence` keeps nothing on disk; `--permission-prompts none` denies
  * anything that would prompt. Ultracode is passed through `--effort ultracode`.
  */
-export function buildClaudePrintArgs(selection: Selection): string[] {
+export function buildClaudePrintArgs(selection: Selection, policy: ClaudeToolPolicy = { profile: 'text-only' }): string[] {
+  const tooled = policy.profile !== 'text-only';
   return [
     '-p',
     '--tools',
-    '',
+    tooled ? claudeTools(policy.profile).join(',') : '',
     '--strict-mcp-config',
     '--restricted',
     '--safe-mode',
@@ -59,6 +61,8 @@ export function buildClaudePrintArgs(selection: Selection): string[] {
     '--no-session-persistence',
     '--permission-prompts',
     'none',
+    // `dontAsk` denies everything that is not pre-approved below; bypassPermissions is never built.
+    ...(tooled ? ['--permission-mode', 'dontAsk', '--allowedTools', ...claudeAllowRules(policy), '--disallowedTools', ...CLAUDE_DENY_RULES] : []),
     '--output-format',
     'json',
     ...(selection.model.kind === 'explicit' ? ['--model', selection.model.value] : []),
@@ -67,6 +71,45 @@ export function buildClaudePrintArgs(selection: Selection): string[] {
       : selection.effort.kind === 'explicit'
         ? ['--effort', selection.effort.value]
         : []),
+  ];
+}
+
+/** Tool access of a Claude step. `terminal` lists extra exact commands (the confirmed verification command). */
+export interface ClaudeToolPolicy {
+  readonly profile: PermissionProfile;
+  readonly terminal?: readonly string[];
+}
+
+/** Exact commands, never wildcards: `git diff *` would also allow `--output=<path>`, a write outside the workspace. */
+export const CLAUDE_READ_COMMANDS: readonly string[] = [
+  'git status --short',
+  'git diff --no-ext-diff --no-textconv',
+  'git diff --no-ext-diff --no-textconv --stat',
+  'git log --oneline -20',
+  'git ls-files',
+];
+
+const CLAUDE_DENY_RULES: readonly string[] = [
+  ...['commit', 'push', 'checkout', 'switch', 'reset', 'stash', 'merge', 'rebase', 'branch', 'config', 'clean', 'worktree'].map((c) => `Bash(git ${c} *)`),
+  'Bash(rm *)', 'Bash(sudo *)', 'Bash(curl *)', 'Bash(wget *)', 'Bash(ssh *)',
+];
+
+/** Built-in tools of a tooled profile; `--restricted` re-adds Bash only because it is named here. */
+export function claudeTools(profile: PermissionProfile): string[] {
+  return profile === 'workspace-write' ? ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'] : ['Read', 'Grep', 'Glob', 'Bash'];
+}
+
+const SAFE_TERMINAL_WORD = /^[A-Za-z0-9._:/=@-]+$/;
+
+export function claudeAllowRules(policy: ClaudeToolPolicy): string[] {
+  const terminal = (policy.terminal ?? []).filter((c) => {
+    const words = c.split(' ');
+    return words.length > 0 && words.every((w) => SAFE_TERMINAL_WORD.test(w));
+  });
+  return [
+    'Read', 'Grep', 'Glob',
+    ...(policy.profile === 'workspace-write' ? ['Edit', 'Write'] : []),
+    ...[...CLAUDE_READ_COMMANDS, ...(policy.profile === 'workspace-write' ? terminal : [])].map((c) => `Bash(${c})`),
   ];
 }
 
@@ -218,6 +261,8 @@ export interface ClaudeRunRequest {
   readonly selection: Selection;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
+  /** Defaults to tool-less (`text-only`). */
+  readonly policy?: ClaudeToolPolicy;
 }
 
 export interface ClaudeRunDeps {
@@ -234,7 +279,7 @@ export async function runClaude(request: ClaudeRunRequest, deps: ClaudeRunDeps =
   const runner = deps.runner ?? runProcess;
   const outcome = await runner({
     command: 'claude',
-    args: buildClaudePrintArgs(request.selection),
+    args: buildClaudePrintArgs(request.selection, request.policy),
     cwd: request.cwd,
     env: claudeRunEnv(deps.env ?? process.env),
     input: request.task,
@@ -249,7 +294,7 @@ export async function runClaude(request: ClaudeRunRequest, deps: ClaudeRunDeps =
       const parsed = parseClaudeJson(outcome.stdout);
       if (parsed === undefined) return { kind: 'failed' };
       const text = sanitize(parsed.text);
-      if (isToolCallOnly(text)) return { kind: 'tool-call-text' };
+      if ((request.policy?.profile ?? 'text-only') === 'text-only' && isToolCallOnly(text)) return { kind: 'tool-call-text' };
       const cut = Buffer.byteLength(text) > MAX_RUN_OUTPUT_BYTES;
       return {
         kind: 'completed',

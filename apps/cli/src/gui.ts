@@ -11,11 +11,10 @@ import {
   isModelRouting,
   isPolicyName,
   isWorkflowName,
-  PROVIDER_CHOICE_STEPS,
+  PERMISSION_PROFILES,
   resolveCacheDir,
   uninstallCollector,
   type InstallResult,
-  type SelectionStep,
   type IntegrationDiagnosis,
   type IntegrationPaths,
   type UninstallResult,
@@ -93,7 +92,7 @@ function obj(value: unknown): Record<string, unknown> | undefined {
 
 /**
  * The providers of plan and review that a built argv will use: the chosen ones, otherwise the workflow's
- * defaults. For plan-implement-review the implementation (always Codex) is the middle entry.
+ * defaults. For plan-implement-review the implementation (default Codex) is the middle entry.
  */
 export function chosenProviders(argv: readonly string[], workflow: WorkflowName = 'plan-review'): ('claude' | 'codex')[] {
   const pick = (step: string, fallback: 'claude' | 'codex'): 'claude' | 'codex' => {
@@ -101,7 +100,7 @@ export function chosenProviders(argv: readonly string[], workflow: WorkflowName 
     const value = at < 0 ? undefined : argv[at]?.slice(step.length + 1);
     return value === 'claude' || value === 'codex' ? value : fallback;
   };
-  return workflow === 'plan-review' ? [pick('plan', 'claude'), pick('review', 'codex')] : [pick('plan', 'claude'), 'codex', pick('review', 'claude')];
+  return workflow === 'plan-review' ? [pick('plan', 'claude'), pick('review', 'codex')] : [pick('plan', 'claude'), pick('implement', 'codex'), pick('review', 'claude')];
 }
 
 /** The steps a real run will report, in the CLI's own order; local steps are shown but never use a provider. */
@@ -110,7 +109,7 @@ export function runStepsFor(workflow: WorkflowName, argv: readonly string[], ver
   if (workflow === 'plan-review') return [{ id: 'plan', provider: used[0] ?? 'claude' }, { id: 'review', provider: used[1] ?? 'codex' }];
   return [
     { id: 'plan', provider: used[0] ?? 'claude' },
-    { id: 'implement', provider: 'codex' },
+    { id: 'implement', provider: used[1] ?? 'codex' },
     { id: 'inspect', provider: 'local' },
     ...(verify ? [{ id: 'verify', provider: 'local' }] : []),
     { id: 'review', provider: used[2] ?? 'claude' },
@@ -142,8 +141,12 @@ export function buildDryRunArgv(input: unknown): Built {
   const providers = obj(steps['providers']) ?? {};
   for (const [step, value] of Object.entries(providers)) {
     if (!STEP_NAMES[workflow].includes(step) || typeof value !== 'string' || !['auto', 'claude', 'codex'].includes(value)) return { error: `invalid provider for ${step}` };
-    if (value === 'claude' && !PROVIDER_CHOICE_STEPS.includes(step as SelectionStep)) return { error: `the ${step} step stays on codex: there is no safe Claude write runner` };
     argv.push('--step-provider', `${step}=${value}`);
+  }
+  const profiles = obj(steps['profiles']) ?? {};
+  for (const [step, value] of Object.entries(profiles)) {
+    if (!STEP_NAMES[workflow].includes(step) || typeof value !== 'string' || !['auto', ...PERMISSION_PROFILES].includes(value)) return { error: `invalid permission profile for ${step}` };
+    argv.push('--step-profile', `${step}=${value}`);
   }
   for (const [group, flag] of [['models', '--step-model'], ['efforts', '--step-effort']] as const) {
     const map = obj(steps[group]) ?? {};

@@ -1,5 +1,7 @@
 import {
   selectionSteps,
+  stepProfile,
+  type PermissionProfile,
   type SelectionProvider,
   type SelectionStep,
   type Selection,
@@ -33,6 +35,7 @@ export function claudeDetails(pf: ClaudePreflight): string {
 export interface StepPreflight {
   readonly step: SelectionStep;
   readonly provider: SelectionProvider;
+  readonly profile: PermissionProfile;
   readonly requested: StepRequest;
   readonly claude?: ClaudePreflight;
   readonly codex?: CodexPreflight;
@@ -121,15 +124,16 @@ export async function preflightSteps(
   for (const { step, provider } of selectionSteps(workflow, requests)) {
     const requested = requests[step];
     if (requested === undefined) throw new Error(`no request for step ${step}`);
-    const input = { ...common, request: requested.request };
-    const key = `${provider}|${requested.request.model}|${requested.request.effort}`;
+    const profile = stepProfile(requests, step);
+    const input = { ...common, request: requested.request, profile };
+    const key = `${provider}|${requested.request.model}|${requested.request.effort}|${profile}`;
     let pending = cache.get(key);
     if (pending === undefined) {
       pending = provider === 'claude' ? claudePreflight(input, deps) : codexPreflight(input, deps);
       cache.set(key, pending);
     }
     const pf = await pending;
-    results.push({ step, provider, requested, ...(provider === 'claude' ? { claude: pf as ClaudePreflight } : { codex: pf as CodexPreflight }) });
+    results.push({ step, provider, profile, requested, ...(provider === 'claude' ? { claude: pf as ClaudePreflight } : { codex: pf as CodexPreflight }) });
   }
   return results;
 }

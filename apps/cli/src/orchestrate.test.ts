@@ -8,7 +8,7 @@ import { parseOrchestrateArgs } from './orchestrate.ts';
 
 import { asClaude } from './claude-json-fixture.ts';
 const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
-const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
+const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--permission-mode <mode>', '--allowedTools <tools...>', '--disallowedTools <tools...>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
 
 function exec(over: { claudeAuth?: string; codexLogin?: string } = {}): Exec {
   return (command, args) => {
@@ -198,7 +198,7 @@ describe('orchestrate --confirm', () => {
 
   it('fails the step, with a fixed reason, when the plan is only tool-call text', async () => {
     const call = JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: '<invoke name="Glob"></invoke>', modelUsage: { 'claude-sonnet-5-5': {} } });
-    const r = await go(CONFIRM, { outcomes: [done(call)] });
+    const r = await go([...CONFIRM, '--step-profile', 'plan=text-only'], { outcomes: [done(call)] });
     expect(r.code).toBe(1);
     expect(r.specs.map((s) => s.command)).toEqual(['claude']);
     expect(r.out).toMatch(/plan\s+claude\s+failed/);
@@ -637,11 +637,13 @@ describe('orchestrate plan-review: per-step provider', () => {
     const r = await go([...DRY, ...SWAP]);
     expect(r.specs).toEqual([]);
     expect(r.out).toContain('step 1/2 plan [codex]: read-only sandbox');
-    expect(r.out).toContain('step 2/2 review [claude]: tool-less');
+    expect(r.out).toContain('step 2/2 review [claude]: read-only tools');
+    const textOnly = await go([...DRY, ...SWAP, '--step-profile', 'review=text-only']);
+    expect(textOnly.out).toContain('step 2/2 review [claude]: tool-less');
     for (const bad of [['--step-provider', 'implement=claude'], ['--step-provider', 'plan=gemini'], ['--step-provider', 'plan=codex', '--step-provider', 'plan=claude']]) {
       expect(typeof parseOrchestrateArgs(['--workflow', 'plan-review', '--task', 'x', '--dry-run', ...bad])).toBe('string');
     }
-    expect(typeof parseOrchestrateArgs(['--workflow', 'plan-implement-review', '--task', 'x', '--dry-run', '--workspace', '/w', '--step-provider', 'implement=claude'])).toBe('string');
+    expect(typeof parseOrchestrateArgs(['--workflow', 'plan-implement-review', '--task', 'x', '--dry-run', '--workspace', '/w', '--step-provider', 'implement=claude'])).toBe('object');
   });
 
   it('runs the swapped providers with their own selections, and a manual model checks against the chosen provider', async () => {

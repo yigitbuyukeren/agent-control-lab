@@ -36,7 +36,7 @@ function workspaceVerdict(prep: PrepareResult): string {
 }
 
 /**
- * `plan-implement-review`: Claude plans, Codex implements in an existing, isolated worktree,
+ * `plan-implement-review`: any provider plans, implements (Claude or Codex, default Codex) in an existing, isolated worktree,
  * a local step checks the result against the change limits, an optional verification command
  * runs, and Claude reviews the diff. Nothing is created, committed, pushed, reverted or deleted.
  */
@@ -56,8 +56,10 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   const chosen = await applyPolicy(args.workflow, args.policy, args.task, args.steps, deps, args.modelRouting, args.evalGroup);
   const pfs = await preflightSteps(args.workflow, chosen.requests, { task: args.task, acceptUnverified: args.acceptUnverified, cwd }, chosen.deps);
   const [planPf, implementPf, reviewPf] = pfs;
-  if (planPf === undefined || implementPf?.codex === undefined || reviewPf === undefined) throw new Error('plan-implement-review needs plan, implement and review steps');
+  if (planPf === undefined || implementPf === undefined || reviewPf === undefined) throw new Error('plan-implement-review needs plan, implement and review steps');
   const ready = prep.ok && atRoot && pfs.every(stepOk);
+  // A Claude implementation may run the verification command itself, but only once it is confirmed.
+  const terminal = args.verify !== undefined && args.confirmVerify === true ? [[args.verify.command, ...args.verify.args].join(' ')] : [];
   const total = args.verify === undefined ? 4 : 5;
   const n = (i: number) => `step ${String(i)}/${String(total)}`;
   const snapshot = prep.ok ? prep.before : prep.reason === 'workspace-rejected' ? prep.snapshot : undefined;
@@ -77,7 +79,11 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         `  ${n(1)} plan [${planPf.provider}]: ${readOnlyMode(planPf)}, subscription login: ${stepVerdict(planPf)}\n` +
         selectionLines(planPf) +
         stepDetails(planPf) +
-        `  ${n(2)} implement [codex]: WRITE sandbox limited to the workspace, git ${implementPf.codex.git}, subscription login: ${stepVerdict(implementPf)}\n` +
+        `  ${n(2)} implement [${implementPf.provider}]: ${
+          implementPf.provider === 'codex'
+            ? `WRITE sandbox limited to the workspace, git ${implementPf.codex?.git ?? 'unknown'}`
+            : `WRITE tools (Edit/Write confined to the workspace by --restricted; terminal: exact git inspection commands${terminal.length > 0 ? ` and ${terminal[0] ?? ''}` : ' only, no test command'}; everything else denied)`
+        }, subscription login: ${stepVerdict(implementPf)}\n` +
         selectionLines(implementPf) +
         stepDetails(implementPf) +
         `  ${n(3)} inspect [local]: read-only Git comparison with the state above, always runs, even after a failure or cancel\n` +
@@ -87,7 +93,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         (args.verify === undefined
           ? ''
           : `  ${n(4)} verify [local]: ${[args.verify.command, ...args.verify.args].join(' ')} (no shell, cleaned environment; RUNS THE NEWLY WRITTEN CODE OUTSIDE ANY MODEL SANDBOX, refused if build/test config files changed, state re-checked afterwards)\n`) +
-        `  ${n(total)} review [${reviewPf.provider}]: ${reviewPf.provider === 'claude' ? 'tool-less' : 'read-only sandbox'}; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each); subscription login: ${stepVerdict(reviewPf)}\n` +
+        `  ${n(total)} review [${reviewPf.provider}]: ${readOnlyMode(reviewPf)}; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each); subscription login: ${stepVerdict(reviewPf)}\n` +
         selectionLines(reviewPf) +
         stepDetails(reviewPf) +
         '  guarantees: no commit, no push, no branch or main-tree changes, no workspace creation, no revert or delete, no retries, no provider fallback, no API keys, ultracode never selected\n' +
@@ -116,7 +122,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     return 1;
   }
   io.error(
-    `orchestrating ${args.workflow}: Codex may WRITE files in ${cwd} (branch ${prep.before.branch ?? ''}); no commit, no push, no retries, no fallback\n` +
+    `orchestrating ${args.workflow}: ${implementPf.provider === 'codex' ? 'Codex' : 'Claude'} may WRITE files in ${cwd} (branch ${prep.before.branch ?? ''}); no commit, no push, no retries, no fallback\n` +
       pfs.map(stepWarnings).join(''),
   );
   const verifyCommand = args.verify;
@@ -127,8 +133,10 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     claudeSelection: stepSelection(planPf),
     codexSelection: stepSelection(implementPf),
     reviewSelection: stepSelection(reviewPf),
-    planChoice: { provider: planPf.provider, selection: stepSelection(planPf) },
-    reviewChoice: { provider: reviewPf.provider, selection: stepSelection(reviewPf) },
+    planChoice: { provider: planPf.provider, selection: stepSelection(planPf), profile: planPf.profile },
+    implementChoice: { provider: implementPf.provider, selection: stepSelection(implementPf), profile: 'workspace-write' },
+    reviewChoice: { provider: reviewPf.provider, selection: stepSelection(reviewPf), profile: reviewPf.profile },
+    terminal,
     timeoutMs: args.timeoutMs,
     inspect: createWorkspaceInspector({ cwd, before: prep.before, git: gitDeps }),
     ...(verifyCommand === undefined || args.confirmVerify !== true

@@ -53,7 +53,7 @@ describe('step provider choice', () => {
     expect(selectionSteps('plan-implement-review', w).map((s) => `${s.step}:${s.provider}`)).toEqual(['plan:claude', 'implement:codex', 'review:codex']);
   });
 
-  it.each([['implement=claude'], ['plan=gemini'], ['plan=claude', 'plan=codex'], ['verify=codex'], ['plan']])('refuses %j', (...providers) => {
+  it.each([['plan=gemini'], ['plan=claude', 'plan=codex'], ['verify=codex'], ['plan']])('refuses %j', (...providers) => {
     expect(typeof buildStepRequests('plan-implement-review', { models: [], efforts: [], providers })).toBe('string');
   });
 });

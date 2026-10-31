@@ -10,7 +10,7 @@ import { parseOrchestrateArgs } from './orchestrate.ts';
 const AUTH_PRO = '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","subscriptionType":"pro","email":"me@example.com"}';
 import { asClaude } from './claude-json-fixture.ts';
 import { OutcomeStoreLockedError } from './outcome-store.ts';
-const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
+const HELP = ['--restricted', '--safe-mode', '--tools <tools...>', '--strict-mcp-config', '--disable-slash-commands', '--no-session-persistence', '--permission-prompts <target>', '--permission-mode <mode>', '--allowedTools <tools...>', '--disallowedTools <tools...>', '--output-format <format>', '--model <model>', '--effort <level>'].map((f) => `  ${f}  text`).join('\n');
 
 const exec: Exec = (command, args) => {
   if (command === 'claude') {
@@ -75,6 +75,8 @@ afterEach(() => {
 interface Scenario {
   /** Called when a model or tool process would start; may edit the workspace to imitate the agent. */
   onCodex?: (spec: ProcessSpec) => ProcessOutcome | undefined;
+  /** Called for every Claude process (any profile) before its canned answer is returned. */
+  onClaude?: (spec: ProcessSpec) => void;
   onVerify?: (spec: ProcessSpec) => ProcessOutcome | undefined;
   claude?: ProcessOutcome[];
   signal?: AbortSignal;
@@ -105,6 +107,7 @@ async function go(argv: string[], scenario: Scenario = {}) {
         specs.push(spec);
         if (spec.command === 'claude') {
           claudeCalls += 1;
+          scenario.onClaude?.(spec);
           return Promise.resolve(asClaude(scenario.claude?.[claudeCalls - 1] ?? done(claudeCalls === 1 ? 'PLAN: change a.txt' : 'VERDICT: approve')));
         }
         if (spec.command === 'codex') return Promise.resolve(scenario.onCodex?.(spec) ?? done('implemented'));
@@ -684,5 +687,73 @@ describe('plan-implement-review: per-step provider', () => {
     const codexSpecs = good.specs.filter((s) => s.command === 'codex');
     expect(codexSpecs).toHaveLength(3);
     expect(codexSpecs[0]?.args).toEqual(expect.arrayContaining(['-m', 'gpt-a', '-c', 'model_reasoning_effort=low']));
+  });
+});
+
+describe('provider x profile matrix (fake agents, real Git worktree)', () => {
+  const PROVIDERS = ['claude', 'codex'] as const;
+  const combos = PROVIDERS.flatMap((plan) => PROVIDERS.flatMap((implement) => PROVIDERS.map((review) => ({ plan, implement, review }))));
+
+  it.each(combos)('plan=$plan implement=$implement review=$review: only the implementation writes, in the worktree', async ({ plan, implement, review }) => {
+    const before = mainState();
+    const argv = [...WRITE(), '--step-provider', `plan=${plan}`, '--step-provider', `implement=${implement}`, '--step-provider', `review=${review}`];
+    const writes: string[] = [];
+    const edit = editFile();
+    const r = await go(argv, {
+      onCodex: (spec) => {
+        if (spec.args.includes('workspace-write')) writes.push('codex');
+        else expect(spec.args).toContain('read-only');
+        if (spec.args.includes('workspace-write')) edit(spec);
+        return undefined;
+      },
+      onClaude: (spec) => {
+        const tools = spec.args[spec.args.indexOf('--tools') + 1] ?? '';
+        if (tools.includes('Edit')) {
+          writes.push('claude');
+          edit(spec);
+        }
+        expect(spec.args).toContain('dontAsk');
+        expect(spec.args).not.toContain('bypassPermissions');
+        expect(spec.args).not.toContain('--dangerously-skip-permissions');
+      },
+    });
+    expect(r.error).not.toContain('refused');
+    expect(r.code).toBe(0);
+    expect(writes).toEqual([implement]);
+    expect(r.specs.map((s) => s.command).filter((c) => c === 'claude' || c === 'codex')).toEqual([plan, implement, review]);
+    expect(readFileSync(join(wt, 'a.txt'), 'utf8')).toBe('one\nTWO\n');
+    expect(mainState()).toEqual(before);
+    expect(r.out).toContain('Nothing was committed or pushed');
+  });
+
+  it('a Claude implementation gets Edit/Write and exact git commands, and the test command only once confirmed', async () => {
+    const claude = ['--step-provider', 'implement=claude'];
+    const noVerify = await go([...WRITE(), ...claude], { onClaude: (spec) => { editFile()(spec); } });
+    const impl = noVerify.specs.filter((s) => s.command === 'claude')[1];
+    const allowed = impl?.args.slice((impl.args.indexOf('--allowedTools')) + 1, impl.args.indexOf('--disallowedTools')) ?? [];
+    expect(allowed).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash(git status --short)']));
+    expect(allowed.some((a) => a.includes('*'))).toBe(false);
+    expect(allowed.some((a) => a.includes('pnpm'))).toBe(false);
+    git(wt, 'checkout', '-q', '--', '.');
+    git(wt, 'clean', '-qfd');
+    const withVerify = await go([...WRITE(), ...claude, '--verify-command', 'pnpm test', '--confirm-verify'], { onClaude: (spec) => { editFile()(spec); } });
+    const impl2 = withVerify.specs.filter((s) => s.command === 'claude')[1];
+    expect(impl2?.args).toContain('Bash(pnpm test)');
+  });
+
+  it('refuses profiles that could write outside the implementation step or that a provider lacks', async () => {
+    for (const bad of [['--step-profile', 'plan=workspace-write'], ['--step-profile', 'review=workspace-write'], ['--step-profile', 'implement=read-only'], ['--step-profile', 'plan=full-access'], ['--step-provider', 'plan=codex', '--step-profile', 'plan=text-only']]) {
+      expect(typeof parseOrchestrateArgs(['--workflow', 'plan-implement-review', '--task', 'x', '--workspace', '/w', '--dry-run', ...bad])).toBe('string');
+    }
+    const textOnly = await go([...ARGS(), '--dry-run', '--step-profile', 'plan=text-only', '--step-profile', 'review=text-only']);
+    expect(textOnly.out).toContain('step 1/4 plan [claude]: tool-less');
+    expect(textOnly.specs).toEqual([]);
+  });
+
+  it('a profile is shown per step in the dry run and never starts a process', async () => {
+    const r = await go([...ARGS(), '--dry-run', '--step-provider', 'implement=claude']);
+    expect(r.specs).toEqual([]);
+    expect(r.out).toContain('implement [claude]: WRITE tools');
+    expect(r.out).toContain('verdict: would run');
   });
 });

@@ -1,6 +1,6 @@
 # Claude run: what is checked and what is not
 
-`run --provider claude` starts a tool-less, non-persistent `claude -p` on a Pro/Max
+`run --provider claude` (and `text-only` orchestration steps) start a tool-less, non-persistent `claude -p` on a Pro/Max
 subscription login. Before it starts, a read-only preflight runs. Nothing here changes any
 global or project setting, and `--dry-run` shows the result without starting anything.
 
@@ -101,3 +101,5 @@ like a call (`<invoke name="Glob">...`). If the **whole** answer is such a block
 `tool_call`, `tool_use`), the step fails with a fixed message ("answered with tool-call text only ... nothing was
 executed and there is no answer") instead of being reported as completed; no model line is printed and nothing is
 retried. The same markup inside prose, a code fence or beside other text, and any other XML, is a normal answer.
+
+Orchestration steps can also use tooled Claude profiles (`read-only`, `workspace-write`); see ORCHESTRATE.md.

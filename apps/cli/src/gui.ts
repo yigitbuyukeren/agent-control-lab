@@ -25,6 +25,7 @@ import { guiPage } from './gui-page.ts';
 import { mergeLogin, parseDryRun, parseModels, parseProviderLines, parseQuota } from './gui-model.ts';
 import { RunManager, type GuiRun } from './gui-run.ts';
 import { maskSecrets } from './gui-secrets.ts';
+import { gitWorkspaceProbe, type WorkspaceProbe } from './gui-workspace.ts';
 
 export const GUI_DEFAULT_PORT = 4173;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -45,6 +46,8 @@ export interface GuiOptions {
   readonly claude?: ClaudeIntegration;
   /** Hard ceiling for a whole run in ms; defaults to the per-step timeout times the steps plus a minute. */
   readonly watchdogMs?: number;
+  /** Read-only Git view of a workspace for plan-implement-review; defaults to the real one. */
+  readonly workspace?: WorkspaceProbe;
 }
 
 export type { GuiRun } from './gui-run.ts';
@@ -88,14 +91,30 @@ function obj(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : undefined;
 }
 
-/** The providers of plan and review that a built argv will use: the chosen ones, otherwise the plan-review defaults. */
-export function chosenProviders(argv: readonly string[]): ('claude' | 'codex')[] {
+/**
+ * The providers of plan and review that a built argv will use: the chosen ones, otherwise the workflow's
+ * defaults. For plan-implement-review the implementation (always Codex) is the middle entry.
+ */
+export function chosenProviders(argv: readonly string[], workflow: WorkflowName = 'plan-review'): ('claude' | 'codex')[] {
   const pick = (step: string, fallback: 'claude' | 'codex'): 'claude' | 'codex' => {
     const at = argv.findIndex((a, i) => argv[i - 1] === '--step-provider' && a.startsWith(`${step}=`));
     const value = at < 0 ? undefined : argv[at]?.slice(step.length + 1);
     return value === 'claude' || value === 'codex' ? value : fallback;
   };
-  return [pick('plan', 'claude'), pick('review', 'codex')];
+  return workflow === 'plan-review' ? [pick('plan', 'claude'), pick('review', 'codex')] : [pick('plan', 'claude'), 'codex', pick('review', 'claude')];
+}
+
+/** The steps a real run will report, in the CLI's own order; local steps are shown but never use a provider. */
+export function runStepsFor(workflow: WorkflowName, argv: readonly string[], verify: boolean): { id: string; provider: string }[] {
+  const used = chosenProviders(argv, workflow);
+  if (workflow === 'plan-review') return [{ id: 'plan', provider: used[0] ?? 'claude' }, { id: 'review', provider: used[1] ?? 'codex' }];
+  return [
+    { id: 'plan', provider: used[0] ?? 'claude' },
+    { id: 'implement', provider: 'codex' },
+    { id: 'inspect', provider: 'local' },
+    ...(verify ? [{ id: 'verify', provider: 'local' }] : []),
+    { id: 'review', provider: used[2] ?? 'claude' },
+  ];
 }
 
 /** Turns a validated request into a dry-run argument vector. `--dry-run` is always present; no confirm flag can ever be produced. */
@@ -194,8 +213,10 @@ const PREVIEW_TTL_MS = 10 * 60 * 1000;
 const MAX_DIRS = 300;
 
 /** The real-run argument vector for a previewed plan-review: the same arguments, confirmed instead of dry-run. */
-export function toRunArgv(dryArgv: readonly string[]): string[] {
-  return dryArgv.map((a) => (a === '--dry-run' ? '--confirm' : a));
+export function toRunArgv(dryArgv: readonly string[], confirmVerify = false): string[] {
+  const write = dryArgv.includes('--workspace');
+  const argv = dryArgv.map((a) => (a === '--dry-run' ? (write ? '--confirm-write' : '--confirm') : a));
+  return write && confirmVerify && argv.includes('--verify-command') ? [...argv, '--confirm-verify'] : argv;
 }
 
 const previewKey = (argv: readonly string[]): string => createHash('sha256').update(JSON.stringify(argv)).digest('hex');
@@ -205,7 +226,9 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
   const token = options.token ?? randomBytes(24).toString('hex');
   const now = options.now ?? Date.now;
   const manager = new RunManager({ run: options.run, now, hide: [token] });
-  const previews = new Map<string, number>();
+  const probe = options.workspace ?? gitWorkspaceProbe();
+  /** Preview key to its expiry and, for a write workflow, the workspace fingerprint the preview was taken against. */
+  const previews = new Map<string, { expiry: number; fingerprint?: string }>();
   // Read-only CLI calls take turns instead of failing when two arrive together.
   let chain: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(fn: () => Promise<T>): Promise<T> => {
@@ -246,23 +269,36 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
   }
 
   async function startRun(body: unknown, res: ServerResponse): Promise<true> {
-    if (obj(body)?.['confirm'] !== true) return json(res, 400, { error: 'explicit confirmation is required' });
-    if (obj(body)?.['workflow'] !== 'plan-review') return json(res, 400, { error: 'only plan-review can run for real; plan-implement-review is preview only' });
+    const b = obj(body);
+    if (b?.['confirm'] !== true) return json(res, 400, { error: 'explicit confirmation is required' });
+    const workflow = b['workflow'];
+    if (workflow !== 'plan-review' && workflow !== 'plan-implement-review') return json(res, 400, { error: 'unknown workflow' });
     const built = buildDryRunArgv(body);
     if ('error' in built) return json(res, 400, { error: built.error });
-    if (obj(body)?.['acceptUnverified'] === true && obj(body)?.['confirmAcceptUnverified'] !== true) {
+    if (b['acceptUnverified'] === true && b['confirmAcceptUnverified'] !== true) {
       return json(res, 400, { error: '--accept-unverified also applies to the real run: it needs its own explicit confirmation' });
     }
-    const cwd = obj(body)?.['cwd'];
-    if (typeof cwd !== 'string' || cwd === '') return json(res, 400, { error: 'choose a project directory' });
+    const write = workflow === 'plan-implement-review';
+    const where = write ? b['workspace'] : b['cwd'];
+    if (typeof where !== 'string' || where === '') return json(res, 400, { error: write ? 'choose the linked worktree' : 'choose a project directory' });
+    if (write && !isAbsolute(where)) return json(res, 400, { error: 'the worktree must be an absolute path' });
+    if (write && b['confirmWrite'] !== true) return json(res, 400, { error: 'plan-implement-review writes files: it needs its own explicit write confirmation' });
+    const verify = write && typeof b['verify'] === 'string' && b['verify'] !== '';
+    if (verify && b['confirmVerify'] !== true) return json(res, 400, { error: 'the test command runs newly written code outside any model sandbox: it needs its own explicit confirmation' });
     if (manager.active) return json(res, 409, { error: 'a run is already active' });
     const key = previewKey(built.argv);
-    const expiry = previews.get(key);
+    const preview = previews.get(key);
     previews.delete(key);
-    if (expiry === undefined || expiry < now()) return json(res, 409, { error: 'run a successful dry-run preview with exactly these settings first' });
+    if (preview === undefined || preview.expiry < now()) return json(res, 409, { error: 'run a successful dry-run preview with exactly these settings first' });
     return exclusive(async () => {
       if (manager.active) return json(res, 409, { error: 'a run is already active' });
-      const used = chosenProviders(built.argv);
+      let before: Awaited<ReturnType<WorkspaceProbe['read']>>;
+      if (write) {
+        before = await probe.read(where);
+        if (before === undefined) return json(res, 409, { error: 'the worktree state cannot be read; nothing was started' });
+        if (before.fingerprint !== preview.fingerprint) return json(res, 409, { error: 'the worktree changed since the preview; run the preview again' });
+      }
+      const used = chosenProviders(built.argv, workflow);
       const quota = parseQuota(await ask(['quota']));
       const full = quota.filter((q) => used.includes(q.provider)).flatMap((q) => q.windows.map((w) => ({ provider: q.provider, ...w }))).find((w) => w.usedPercent >= QUOTA_STOP_PERCENT);
       if (full !== undefined) return json(res, 409, { error: `quota is almost used up (${full.provider} ${full.label}: ${String(full.usedPercent)}%); nothing was started` });
@@ -270,9 +306,11 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
       for (const [label, w] of [['5h window', claudeNow?.fiveHour], ['7d window', claudeNow?.sevenDay]] as const) {
         if (w?.usedPercent !== undefined && w.usedPercent >= QUOTA_STOP_PERCENT) return json(res, 409, { error: `quota is almost used up (claude ${label}: ${String(w.usedPercent)}%); nothing was started` });
       }
-      const timeoutSec = obj(body)?.['timeoutSec'];
+      const timeoutSec = b['timeoutSec'];
       const perStep = (typeof timeoutSec === 'number' ? timeoutSec : 600) * 1000;
-      manager.start(toRunArgv(built.argv), [{ id: 'plan', provider: used[0] ?? 'claude' }, { id: 'review', provider: used[1] ?? 'codex' }], options.watchdogMs ?? perStep * 2 + 60_000);
+      const steps = runStepsFor(workflow, built.argv, verify);
+      const timed = steps.filter((st) => st.provider !== 'local').length + (verify ? 1 : 0);
+      manager.start(toRunArgv(built.argv, verify), steps, options.watchdogMs ?? perStep * timed + 60_000, write ? () => probe.report(where, before) : undefined);
       return json(res, 202, manager.snapshot());
     });
   }
@@ -360,9 +398,14 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
         errors = maskSecrets(errors, [token]);
         const view = parseDryRun(output);
         if (exitCode === 0 && view.verdict === 'would-run') {
-          for (const [k, t] of previews) if (t < now()) previews.delete(k);
-          if (previews.size >= 20) previews.clear();
-          previews.set(previewKey(built.argv), now() + PREVIEW_TTL_MS);
+          const wsIndex = built.argv.indexOf('--workspace');
+          const state = wsIndex < 0 ? undefined : await probe.read(built.argv[wsIndex + 1] ?? '');
+          // A write workflow is only runnable against a workspace whose state could be read now.
+          if (wsIndex < 0 || state !== undefined) {
+            for (const [k, v] of previews) if (v.expiry < now()) previews.delete(k);
+            if (previews.size >= 20) previews.clear();
+            previews.set(previewKey(built.argv), { expiry: now() + PREVIEW_TTL_MS, ...(state === undefined ? {} : { fingerprint: state.fingerprint }) });
+          }
         }
         return json(res, 200, { exitCode, output, errors, view });
       });

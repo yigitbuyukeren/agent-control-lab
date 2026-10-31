@@ -86,6 +86,7 @@ pre{margin:0;padding:12px;white-space:pre-wrap;overflow-wrap:anywhere;font:12px/
 table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{text-align:left;padding:8px 10px;border-top:1px solid var(--line)}th{color:var(--mute);font-weight:500;border-top:0}td.m{font-family:var(--mono)}
 .empty{color:var(--mute);padding:22px;text-align:center;border:1px dashed var(--line2);border-radius:var(--r)}
 .skel{height:14px;border-radius:6px;background:linear-gradient(90deg,var(--panel) 25%,var(--panel2) 50%,var(--panel) 75%);background-size:200% 100%;animation:shine 1.2s linear infinite}
+.wsum{margin-top:14px}.wsum h3{font-size:14px;margin:0 0 8px}
 .list{margin:0;padding-left:18px;color:var(--dim)}.list li{margin:5px 0}
 .toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--bad);color:var(--fg);padding:10px 14px;border-radius:11px;animation:rise .25s ease both;z-index:20;max-width:360px}
 .pathrow{display:flex;gap:8px}.pathrow input{flex:1;min-width:0}

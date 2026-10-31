@@ -33,6 +33,7 @@ if (args[0] === 'login') { console.log('Logged in using ChatGPT'); process.exit(
 let stdin = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (d) => { stdin += d; });
 process.stdin.on('end', () => {
   if (args[0] === 'exec') fs.appendFileSync(path.join(__dirname, 'calls.log'), 'codex\\n');
+  if (args[0] === 'exec' && mode.write && args.includes('workspace-write')) fs.writeFileSync(path.join(process.cwd(), 'new.txt'), 'hello\\n');
   if (mode.codex === 'hang' && args[0] === 'exec') { setInterval(() => undefined, 1000); return; }
   console.log('VERDICT: approve');
 });
@@ -194,4 +195,100 @@ describe('GUI per-step provider choice against fake CLIs (no model is contacted)
     expect((await api('/api/run', { ...req({ steps: { providers: { review: 'claude' }, models: { review: 'gpt-nope' } } }), confirm: true })).status).toBe(409);
     expect(calls().length).toBe(before);
   });
+});
+
+describe('GUI real plan-implement-review run against fake CLIs and real Git (no model is contacted)', () => {
+  let main = '';
+  let wt = '';
+  let marks = '';
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=', ...args], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  const body = (over: Record<string, unknown> = {}) => ({ workflow: 'plan-implement-review', task: 'add a --json flag', routing: 'auto', policy: 'balanced', workspace: wt, timeoutSec: 60, steps: {}, ...over });
+  type Run = Snap & { workspace?: { readable: boolean; committed: boolean; branch?: string; headBefore?: string; headAfter?: string; files: { path: string; kind: string }[] } };
+
+  beforeAll(() => {
+    main = join(root, 'pir main');
+    wt = join(root, 'pir wt');
+    marks = join(root, 'marks.log');
+    mkdirSync(main);
+    git(main, 'init', '-q', '-b', 'main');
+    writeFileSync(join(main, 'a.txt'), 'one\n');
+    writeFileSync(join(main, 'check.js'), `require('node:fs').appendFileSync(${JSON.stringify(marks)}, 'verified\\n');\n`);
+    git(main, 'add', '.');
+    git(main, 'commit', '-q', '-m', 'init');
+    git(main, 'worktree', 'add', '-q', '-b', 'feature', wt);
+  });
+
+  it('refuses without preview and write confirmation, then writes only in the worktree, shows live steps and the real Git state', async () => {
+    setMode({ write: true });
+    const before = calls().length;
+    expect((await api('/api/run', { ...body(), confirm: true, confirmWrite: true })).status).toBe(409); // no preview
+    const preview = (await (await api('/api/dry-run', body())).json()) as { view: { verdict: string; steps: { id: string; provider: string }[] } };
+    expect(preview.view.verdict).toBe('would-run');
+    expect(calls().length).toBe(before);
+    expect((await api('/api/run', { ...body(), confirm: true })).status).toBe(400); // no write confirmation
+    expect(calls().length).toBe(before);
+    const head = git(wt, 'rev-parse', 'HEAD');
+    expect((await api('/api/run', { ...body(), confirm: true, confirmWrite: true })).status).toBe(202);
+    const done = (await settle()) as Run;
+    expect(done.status).toBe('completed');
+    expect(calls().slice(before)).toEqual(['claude', 'codex', 'claude']);
+    expect(done.steps.map((s) => `${s.id}:${s.provider ?? ''}:${s.status}`)).toEqual(['plan:claude:completed', 'implement:codex:completed', 'inspect:local:completed', 'review:claude:completed']);
+    expect(done.workspace).toMatchObject({ readable: true, committed: false, branch: 'feature', headBefore: head, headAfter: head });
+    expect(done.workspace?.files).toEqual([{ path: 'new.txt', kind: 'new', bytes: 6 }]);
+    expect(JSON.stringify(done)).not.toContain('sk-abcdefghijklmnopqrstuvwx');
+    expect(existsSync(join(wt, 'new.txt'))).toBe(true);
+    expect(existsSync(join(main, 'new.txt'))).toBe(false);
+    expect(git(main, 'status', '--porcelain')).toBe('');
+    expect(git(wt, 'rev-parse', 'HEAD')).toBe(head);
+    rmSync(join(wt, 'new.txt'));
+  }, 90_000);
+
+  it('runs the test command only with its own confirmation', async () => {
+    setMode({ write: true });
+    const b = body({ verify: 'node check.js' });
+    await api('/api/dry-run', b);
+    const before = calls().length;
+    expect((await api('/api/run', { ...b, confirm: true, confirmWrite: true })).status).toBe(400);
+    expect(calls().length).toBe(before);
+    expect(existsSync(marks)).toBe(false);
+    await api('/api/dry-run', b);
+    expect((await api('/api/run', { ...b, confirm: true, confirmWrite: true, confirmVerify: true })).status).toBe(202);
+    const done = (await settle()) as Run;
+    expect(done.status).toBe('completed');
+    expect(done.steps.map((s) => s.id)).toEqual(['plan', 'implement', 'inspect', 'verify', 'review']);
+    expect(readFileSync(marks, 'utf8')).toBe('verified\n');
+    rmSync(join(wt, 'new.txt'));
+  }, 90_000);
+
+  it('refuses when the worktree changed after the preview, and the CLI itself refuses a dirty one', async () => {
+    setMode({ write: true });
+    await api('/api/dry-run', body());
+    writeFileSync(join(wt, 'dirty.txt'), 'x\n');
+    const before = calls().length;
+    expect((await api('/api/run', { ...body(), confirm: true, confirmWrite: true })).status).toBe(409);
+    expect(calls().length).toBe(before);
+    const again = (await (await api('/api/dry-run', body())).json()) as { view: { verdict: string } };
+    expect(again.view.verdict).toBe('would-refuse'); // the CLI itself refuses a dirty worktree
+    rmSync(join(wt, 'dirty.txt'));
+  }, 60_000);
+
+  it('cancels during the implementation, stops Codex and still reports what was written', async () => {
+    setMode({ write: true, codex: 'hang' });
+    await api('/api/dry-run', body());
+    expect((await api('/api/run', { ...body(), confirm: true, confirmWrite: true })).status).toBe(202);
+    for (let i = 0; i < 100; i += 1) {
+      const s = (await (await api('/api/run')).json()) as Snap;
+      if (s.steps.find((x) => x.id === 'implement')?.status === 'running' && existsSync(join(wt, 'new.txt'))) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(((await (await api('/api/run/cancel', {})).json()) as { cancelled: boolean }).cancelled).toBe(true);
+    const done = (await settle()) as Run;
+    expect(done.status).toBe('cancelled');
+    expect(done.workspace).toMatchObject({ readable: true, committed: false });
+    expect(done.workspace?.files.map((f) => f.path)).toEqual(['new.txt']);
+    expect(existsSync(join(wt, 'new.txt'))).toBe(true); // nothing is rolled back
+    expect(done.steps.find((x) => x.id === 'inspect')?.status).toBe('completed'); // always runs, even after a cancel
+    rmSync(join(wt, 'new.txt'));
+  }, 90_000);
 });

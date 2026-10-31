@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { writeClaudeCache } from '@agent-control-lab/core';
 import { buildDryRunArgv, chosenProviders, createGuiServer, fileClaudeIntegration, listenGui } from './gui.ts';
 import { parseGuiArgs } from './gui-command.ts';
+import type { WorkspaceProbe, WorkspaceReport, WorkspaceState } from './gui-workspace.ts';
 
 const TOKEN = 'test-token';
 const open: Server[] = [];
@@ -374,5 +375,124 @@ describe('Claude quota integration endpoints', () => {
     expect(res.status).toBe(409);
     expect(((await res.json()) as { error: string }).error).toContain('claude 5h window');
     expect(calls.some((c) => c.includes('--confirm'))).toBe(false);
+  });
+});
+
+describe('real plan-implement-review run gate', () => {
+  const state = (fingerprint: string): WorkspaceState => ({ fingerprint, root: '/w', head: 'a'.repeat(40), branch: 'feature', refs: 'r' });
+  const report: WorkspaceReport = { readable: true, root: '/w', branch: 'feature', headBefore: 'a'.repeat(40), headAfter: 'a'.repeat(40), committed: false, files: [{ path: 'a.txt', kind: 'changed', added: 1, deleted: 1 }], truncated: false, added: 1, deleted: 1 };
+  const body = (over: Record<string, unknown> = {}) => ({ workflow: 'plan-implement-review', task: 'do it', routing: 'auto', policy: 'balanced', steps: {}, workspace: '/w', timeoutSec: 120, ...over });
+  function make(opts: { fingerprint?: () => string | undefined; quota?: string; hang?: boolean } = {}) {
+    const calls: string[][] = [];
+    const reads: string[] = [];
+    const probe: WorkspaceProbe = {
+      read: (path) => { reads.push(path); const f = opts.fingerprint?.() ?? 'fp1'; return Promise.resolve(f === 'unreadable' ? undefined : state(f)); },
+      report: () => Promise.resolve(report),
+    };
+    const server = createGuiServer({
+      token: TOKEN,
+      watchdogMs: 5000,
+      workspace: probe,
+      run: (argv, io, signal) => {
+        calls.push([...argv]);
+        if (argv[0] === 'quota') { io.out(opts.quota ?? 'Codex plan: plus\n  5h window (primary): 3% used\n'); return Promise.resolve(0); }
+        if (argv.includes('--dry-run')) { io.out('orchestrate plan (dry run, no agent started)\n  verdict: would run\n'); return Promise.resolve(0); }
+        io.error('step 1/4 plan [claude] running\n');
+        if (opts.hang === true) return new Promise((resolve) => { signal?.addEventListener('abort', () => { resolve(130); }); });
+        io.error('step 1/4 plan [claude] completed (1.0s)\nstep 3/4 inspect [local] completed (0.1s)\n');
+        return Promise.resolve(0);
+      },
+    });
+    open.push(server);
+    return { calls, reads, server };
+  }
+  async function boot(m: ReturnType<typeof make>) {
+    const base = `http://127.0.0.1:${String(await listenGui(m.server, 0))}`;
+    const api = (path: string, b?: unknown) => fetch(`${base}${path}`, { method: b === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json', 'x-acl-token': TOKEN }, ...(b === undefined ? {} : { body: JSON.stringify(b) }) });
+    const settle = async () => {
+      for (let i = 0; i < 100; i += 1) {
+        const snap = (await (await api('/api/run')).json()) as { status: string; steps: { id: string; provider: string }[]; workspace?: WorkspaceReport };
+        if (snap.status !== 'running' && snap.status !== 'cancelling') return snap;
+        await new Promise((r) => setTimeout(r, 20));
+      }
+      throw new Error('run did not settle');
+    };
+    return { api, settle };
+  }
+  const OK = { confirm: true, confirmWrite: true };
+
+  it('needs the preview, its own write confirmation and a readable worktree', async () => {
+    const m = make();
+    const { api } = await boot(m);
+    expect((await api('/api/run', body({ confirm: true }))).status).toBe(400); // no write confirmation
+    expect((await api('/api/run', body({ ...OK, workspace: 'relative' }))).status).toBe(400);
+    expect((await api('/api/run', body(OK))).status).toBe(409); // no preview
+    expect(m.calls.some((c) => c.includes('--confirm-write'))).toBe(false);
+    const bad = make({ fingerprint: () => 'unreadable' });
+    const b = await boot(bad);
+    await b.api('/api/dry-run', body());
+    expect((await b.api('/api/run', body(OK))).status).toBe(409); // unreadable workspace is never previewed as runnable
+    expect(bad.calls.some((c) => c.includes('--confirm-write'))).toBe(false);
+  });
+
+  it('refuses when the worktree changed after the preview, and uses the preview only once', async () => {
+    let fp = 'fp1';
+    const m = make({ fingerprint: () => fp });
+    const { api, settle } = await boot(m);
+    await api('/api/dry-run', body());
+    fp = 'fp2';
+    const res = await api('/api/run', body(OK));
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('changed since the preview');
+    expect((await api('/api/run', body(OK))).status).toBe(409); // preview consumed
+    fp = 'fp3';
+    await api('/api/dry-run', body());
+    expect((await api('/api/run', body(OK))).status).toBe(202);
+    expect((await settle()).status).toBe('completed');
+  });
+
+  it('builds the write argv from the previewed one, adds the test command only with its own confirmation, and reports the real workspace', async () => {
+    const m = make();
+    const { api, settle } = await boot(m);
+    const withVerify = body({ verify: 'pnpm test' });
+    await api('/api/dry-run', withVerify);
+    expect((await api('/api/run', { ...withVerify, ...OK })).status).toBe(400); // test command needs its own confirmation
+    await api('/api/dry-run', withVerify);
+    expect((await api('/api/run', { ...withVerify, ...OK, confirmVerify: true })).status).toBe(202);
+    const done = await settle();
+    const real = m.calls.find((c) => c.includes('--confirm-write'));
+    expect(real).toBeDefined();
+    expect(real).not.toContain('--dry-run');
+    expect(real).toEqual(expect.arrayContaining(['--confirm-verify', '--verify-command', 'pnpm test', '--workspace', '/w']));
+    expect(done.steps.map((s) => `${s.id}:${s.provider}`)).toEqual(['plan:claude', 'implement:codex', 'inspect:local', 'verify:local', 'review:claude']);
+    expect(done.workspace).toEqual(report);
+    await api('/api/dry-run', body());
+    expect((await api('/api/run', { ...body(), ...OK })).status).toBe(202);
+    await settle();
+    const plain = m.calls.filter((c) => c.includes('--confirm-write')).at(-1);
+    expect(plain).not.toContain('--confirm-verify');
+    expect(plain).not.toContain('--verify-command');
+  });
+
+  it('applies the quota guard to the Codex implementation even when plan and review use Claude', async () => {
+    const m = make({ quota: 'Codex plan: plus\n  5h window (primary): 97% used\n' });
+    const { api } = await boot(m);
+    const b = body({ steps: { providers: { plan: 'claude', review: 'claude' } } });
+    await api('/api/dry-run', b);
+    const res = await api('/api/run', { ...b, ...OK });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { error: string }).error).toContain('quota');
+    expect(m.calls.some((c) => c.includes('--confirm-write'))).toBe(false);
+  });
+
+  it('cancels a write run and still reports the workspace read afterwards', async () => {
+    const m = make({ hang: true });
+    const { api, settle } = await boot(m);
+    await api('/api/dry-run', body());
+    expect((await api('/api/run', { ...body(), ...OK })).status).toBe(202);
+    expect(((await (await api('/api/run/cancel', {})).json()) as { cancelled: boolean }).cancelled).toBe(true);
+    const done = await settle();
+    expect(done.status).toBe('cancelled');
+    expect(done.workspace?.readable).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import { maskSecrets } from './gui-secrets.ts';
+import type { WorkspaceReport } from './gui-workspace.ts';
 import type { Io } from './main.ts';
 
 export type RunStatus = 'running' | 'cancelling' | 'completed' | 'failed' | 'refused' | 'cancelled' | 'timeout';
@@ -35,6 +36,8 @@ export interface RunSnapshot {
   readonly sections?: readonly RunSection[];
   readonly summary?: string;
   readonly refusal?: readonly string[];
+  /** Real workspace state read from Git after a write run. */
+  readonly workspace?: WorkspaceReport;
 }
 
 export type GuiRun = (argv: readonly string[], io: Io, signal?: AbortSignal) => Promise<number>;
@@ -101,6 +104,7 @@ export class RunManager {
   private sections: RunSection[] | undefined;
   private summary: string | undefined;
   private refusal: string[] | undefined;
+  private workspace: WorkspaceReport | undefined;
 
   constructor(options: RunManagerOptions) {
     this.options = options;
@@ -110,7 +114,7 @@ export class RunManager {
     return this.status === 'running' || this.status === 'cancelling';
   }
 
-  start(argv: readonly string[], steps: readonly { id: string; provider: string }[], watchdogMs: number): void {
+  start(argv: readonly string[], steps: readonly { id: string; provider: string }[], watchdogMs: number, report?: () => Promise<WorkspaceReport>): void {
     if (this.active) throw new Error('a run is already active');
     this.id += 1;
     this.status = 'running';
@@ -126,6 +130,7 @@ export class RunManager {
     this.sections = undefined;
     this.summary = undefined;
     this.refusal = undefined;
+    this.workspace = undefined;
     this.timedOut = false;
     const controller = new AbortController();
     this.controller = controller;
@@ -135,7 +140,20 @@ export class RunManager {
     }, watchdogMs);
     this.settled = this.options
       .run(argv, { out: (t) => { this.out = (this.out + t).slice(0, MAX_OUTPUT_CHARS); }, error: (t) => { this.onError(t); } }, controller.signal)
-      .then((code) => { this.finish(code); }, () => { this.finish(1, true); });
+      .then(
+        async (code) => { await this.collect(report); this.finish(code); },
+        async () => { await this.collect(report); this.finish(1, true); },
+      );
+  }
+
+  /** The real workspace state, read after the orchestration stopped and before the run is shown as finished. */
+  private async collect(report: (() => Promise<WorkspaceReport>) | undefined): Promise<void> {
+    if (report === undefined) return;
+    try {
+      this.workspace = await report();
+    } catch {
+      this.workspace = { readable: false, committed: false, files: [], truncated: false, added: 0, deleted: 0 };
+    }
   }
 
   cancel(): boolean {
@@ -170,6 +188,7 @@ export class RunManager {
       ...(this.sections === undefined ? {} : { sections: this.sections }),
       ...(this.summary === undefined ? {} : { summary: this.summary }),
       ...(this.refusal === undefined ? {} : { refusal: this.refusal }),
+      ...(this.workspace === undefined ? {} : { workspace: this.workspace }),
     };
   }
 

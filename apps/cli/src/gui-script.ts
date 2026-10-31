@@ -18,8 +18,10 @@ const FLOWS={'plan-review':['plan','review'],'plan-implement-review':['plan','im
 const STEPS={
  plan:{tr:'Plan',icon:'layers',d:'Görevi adımlara böler. Claude araçsız, Codex salt okunur çalışır.',provider:()=> 'claude'},
  implement:{tr:'Uygulama',icon:'term',d:'Yalnızca izole çalışma ağacına yazar.',provider:()=> 'codex'},
+ inspect:{tr:'Denetim',icon:'shield',d:'',provider:()=> 'local'},
+ verify:{tr:'Test komutu',icon:'term',d:'',provider:()=> 'local'},
  review:{tr:'İnceleme',icon:'shield',d:'Çıktıyı bağımsız olarak gözden geçirir.',provider:(w)=>w==='plan-review'?'codex':'claude'}};
-const PN={claude:'Claude',codex:'Codex'};
+const PN={claude:'Claude',codex:'Codex',local:'Yerel'};
 const provOf=(id)=>{const st=S.steps[id];return id!=='implement'&&st.provider?st.provider:STEPS[id].provider(S.workflow)};
 const S={claude:null,claudeMsg:'',cwd:'',timeout:300,previewKey:null,run:null,runLines:[],runCursor:0,timer:null,tick:null,view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
 const modelsOf=(p)=>{const g=(S.status&&S.status.models||[]).find((x)=>x.provider===p);return g?g.models:[]};
@@ -69,10 +71,12 @@ function buildRun(){
  R.wf=h('div',{class:'seg',role:'group','aria-label':'İş akışı'});
  R.routes=h('div',{class:'routes'});
  R.pol=h('div',{class:'seg',role:'group','aria-label':'Politika'});R.polHint=h('p',{class:'hint'});
- R.ws=h('input',{type:'text',id:'ws',autocomplete:'off',placeholder:'/yol/izole-calisma-agaci'});
- R.verify=h('input',{type:'text',id:'vc',autocomplete:'off',placeholder:'pnpm test'});
- R.wsBox=h('div',{class:'card lockable'},h('h2',{},IC('doc'),'Çalışma ağacı'),h('p',{class:'hint'},'Var olan, bağlı bir Git çalışma ağacı. Önizlemede yazılmaz.'),
-  h('label',{class:'l',for:'ws'},'Yol'),R.ws,h('div',{style:null},''),h('label',{class:'l',for:'vc',},'Doğrulama komutu (yalnızca gösterilir, çalıştırılmaz)'),R.verify);
+ R.ws=h('input',{type:'text',id:'ws',autocomplete:'off',placeholder:'/yol/izole-calisma-agaci',oninput:()=>{drawRunBtn()}});
+ R.wsPicker=h('div',{class:'picker',hidden:true});
+ R.verify=h('input',{type:'text',id:'vc',autocomplete:'off',placeholder:'pnpm test',oninput:()=>{drawRunBtn()}});
+ R.wsBox=h('div',{class:'card lockable'},h('h2',{},IC('doc'),'Çalışma ağacı'),h('p',{class:'hint'},'Var olan, bağlı bir Git çalışma ağacı (ana ağaç olmaz, temiz olmalı). Codex yalnızca burada yazar; önizlemede hiçbir şey yazılmaz.'),
+  h('label',{class:'l',for:'ws'},'Yol'),h('div',{class:'pathrow'},R.ws,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.ws.value.trim(),R.ws)}},'Gözat')),R.wsPicker,h('div',{class:'sp'}),h('label',{class:'l',for:'vc'},'Test komutu (isteğe bağlı)'),R.verify,
+  h('p',{class:'hint'},'Yeni yazılan kodu model korumasının dışında çalıştırır; yalnızca ayrı bir onayla çalışır. Önizlemede çalıştırılmaz.'));
  R.acc=h('input',{type:'checkbox',id:'acc',onchange:()=>{S.accept=R.acc.checked;drawRunBtn()}});
  R.go=h('button',{class:'go',type:'button',onclick:preview},IC('play'),h('span',{},'Önizle (dry run)'));
  R.out=h('div',{class:'stack'});R.runOut=h('div',{class:'stack'});
@@ -80,9 +84,9 @@ function buildRun(){
  R.picker=h('div',{class:'picker',hidden:true});
  R.tsel=h('select',{id:'tmo','aria-label':'Adım başına zaman aşımı',onchange:()=>{S.timeout=Number(R.tsel.value);drawRunBtn()}},[[120,'2 dakika'],[300,'5 dakika'],[600,'10 dakika'],[900,'15 dakika']].map(([v,t])=>h('option',{value:v},t)));R.tsel.value=String(S.timeout);
  R.cwdBox=h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Proje dizini'),h('p',{class:'hint'},'Claude ve Codex bu dizinde çalışır (araçsız plan, salt okunur inceleme). Gerçek çalıştırma için seçilmesi zorunludur.'),
-  h('label',{class:'l',for:'cwd'},'Yol'),h('div',{class:'pathrow'},R.cwd,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.cwd.value.trim())}},'Gözat')),R.picker,
-  h('div',{class:'sp'}),h('label',{class:'l',for:'tmo'},'Adım başına zaman aşımı'),R.tsel);
- R.runBtn=h('button',{class:'go run',type:'button',onclick:confirmRun},IC('play'),h('span',{},'Gerçek çalıştır (plan-review)'));
+  h('label',{class:'l',for:'cwd'},'Yol'),h('div',{class:'pathrow'},R.cwd,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.cwd.value.trim(),R.cwd)}},'Gözat')),R.picker);
+ R.tmoBox=h('section',{class:'card lockable'},h('label',{class:'l',for:'tmo'},'Adım başına zaman aşımı'),R.tsel);
+ R.runBtn=h('button',{class:'go run',type:'button',onclick:confirmRun},IC('play'),h('span',{}));
  R.runNote=h('p',{class:'note'});
  R.view=h('div',{class:'view'},h('div',{class:'grid'},
   h('div',{class:'stack'},
@@ -92,7 +96,7 @@ function buildRun(){
   h('aside',{class:'stack'},
    h('section',{class:'card lockable'},h('h2',{},IC('spark'),'Model yönlendirme'),h('p',{class:'hint'},'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez.'),R.routes),
    h('section',{class:'card lockable'},h('h2',{},IC('gauge'),'Politika'),R.polHint,R.pol),
-   R.wsBox,R.cwdBox,
+   R.wsBox,R.cwdBox,R.tmoBox,
    h('section',{class:'card lockable'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul et ',h('code',{},'--accept-unverified'),'. Önizlemeye, gerçek çalıştırmayı ayrıca onaylarsanız ona da aktarılır. Proxy veya ön kontrol reddi kendiliğinden atlanmaz; bu bayrak yalnızca sizin açık tercihinizdir.'))),
    R.go,R.runBtn,R.runNote)));
  main.append(R.view)}
@@ -173,12 +177,12 @@ async function preview(){
 const SST={pending:'bekliyor',running:'çalışıyor',completed:'tamamlandı',failed:'başarısız',timeout:'zaman aşımı',cancelled:'iptal edildi',skipped:'atlandı'};
 const RST={running:'Çalışıyor',cancelling:'İptal ediliyor…',completed:'Tamamlandı',failed:'Başarısız',refused:'CLI ön kontrolü reddetti',cancelled:'İptal edildi',timeout:'Zaman aşımına uğradı'};
 const chipCls=(st)=>st==='completed'?'ok':(st==='failed'||st==='timeout'||st==='refused')?'bad':(st==='running'||st==='cancelling'||st==='cancelled'||st==='skipped')?'warn':'def';
-function drawRunBtn(){const pr=S.workflow==='plan-review',act=runActive();R.runBtn.hidden=!pr;
- if(!pr){R.runNote.textContent='Bu iş akışı bu sürümde yalnızca önizlenebilir; gerçek çalıştırma yalnızca plan-review içindir.';return}
- const dir=R.cwd.value.trim()!=='';
+function drawRunBtn(){const pw=S.workflow==='plan-implement-review',act=runActive();R.runBtn.hidden=false;
+ R.runBtn.lastChild.textContent=pw?'Gerçek çalıştır (plan-implement-review, dosya yazar)':'Gerçek çalıştır (plan-review)';
+ const dir=(pw?R.ws.value:R.cwd.value).trim()!=='';
  const ready=!!S.result&&S.result.exitCode===0&&S.result.view.verdict==='would-run'&&S.previewKey===paramsKey()&&dir&&!act;
  R.runBtn.disabled=!ready;
- R.runNote.textContent=act?'Bir koşu sürüyor; aynı anda yalnızca bir koşu çalışır.':ready?'Önizleme geçti. Gerçek çalıştırma ayrıca açık onay ister.':!dir?'Önce proje dizinini seçin.':'Gerçek çalıştırma için aynı ayarlarla geçen bir önizleme gerekir.'}
+ R.runNote.textContent=act?'Bir koşu sürüyor; aynı anda yalnızca bir koşu çalışır.':ready?(pw?'Önizleme geçti. Gerçek çalıştırma ayrıca açık yazma onayı ister'+(R.verify.value.trim()?' (test komutu için ayrı onayla)':'')+'.':'Önizleme geçti. Gerçek çalıştırma ayrıca açık onay ister.'):!dir?(pw?'Önce çalışma ağacını seçin.':'Önce proje dizinini seçin.'):'Gerçek çalıştırma için aynı ayarlarla geçen bir önizleme gerekir.'}
 function setLocked(on){R.view.querySelectorAll('.lockable').forEach((e)=>{e.inert=on;e.style.opacity=on?'.65':''});R.go.disabled=on||S.busy}
 function updateNodes(){document.querySelectorAll('.node').forEach((n)=>{const el=n.querySelector('.rstat');if(!el)return;const id=el.dataset.step;const st=S.run&&S.run.steps.find((x)=>x.id===id);
  n.classList.toggle('running',!!st&&st.status==='running');el.replaceChildren();if(!st)return;
@@ -191,11 +195,13 @@ function drawRun(){const r=S.run;R.runOut.replaceChildren();setLocked(runActive(
  const steps=h('div',{class:'steps'},r.steps.map((st)=>h('div',{class:'srow'},h('span',{class:'dot '+(st.status==='completed'?'ok':st.status==='running'?'warn':(st.status==='failed'||st.status==='timeout')?'bad':'')}),h('b',{},(STEPS[st.id]||{tr:st.id}).tr),h('span',{class:'chip def'},PN[st.provider]||st.provider),
   h('span',{class:'chip '+chipCls(st.status)},SST[st.status]||st.status),st.seconds!=null?h('span',{class:'why'},st.seconds.toFixed(1)+' sn'):null,st.error?h('span',{class:'why'},st.error):null)));
  const card=h('section',{class:'card'},head,steps);
- const msg=r.status==='completed'?['ok','Koşu tamamlandı',PN[provOf('plan')]+' planladı, '+PN[provOf('review')]+' inceledi. Dosya yazılmadı, commit/push yapılmadı.']:
+ const wr=r.workspace;const pw=r.steps.some((x)=>x.id==='implement');
+ const msg=r.status==='completed'?['ok','Koşu tamamlandı',pw?'Özet aşağıda Git’ten okunan gerçek çalışma ağacı durumundan üretildi.':PN[provOf('plan')]+' planladı, '+PN[provOf('review')]+' inceledi. Dosya yazılmadı, commit/push yapılmadı.']:
   r.status==='refused'?['bad','CLI ön kontrolü reddetti — hiçbir adım başlamadı','Güvenlik kontrolleri otomatik atlanmaz. Nedenleri aşağıda; giderip yeniden önizleyin.']:
-  r.status==='cancelled'?['bad','Koşu iptal edildi','Başlatılan süreçler durduruldu; kısmi çıktı varsa aşağıdadır.']:
+  r.status==='cancelled'?['bad','Koşu iptal edildi',pw?'Süreçler durduruldu. Yazılanlar geri alınmadı; gerçek durum aşağıda.':'Başlatılan süreçler durduruldu; kısmi çıktı varsa aşağıdadır.']:
   r.status==='timeout'?['bad','Zaman aşımı','Koşu süre sınırını aştı ve durduruldu.']:r.status==='failed'?['bad','Koşu başarısız','Ayrıntı canlı kayıtta.']:null;
  if(msg)card.append(h('div',{class:'banner '+msg[0],style:null},IC(msg[0]==='ok'?'check':'alert'),h('div',{},h('b',{},msg[1]),h('small',{},msg[2]))));
+ if(pw&&wr)card.append(workspaceCard(wr,r.status));
  if(r.refusal&&r.refusal.length)card.append(h('pre',{class:'refusal'},r.refusal.join('\n')));
  R.logPre=h('pre',{id:'log'},S.runLines.join('\n'));
  card.append(h('details',{open:true},h('summary',{},IC('chev'),'Canlı kayıt ('+S.runLines.length+' satır, maskelenmiş)'),R.logPre));
@@ -205,38 +211,54 @@ function drawRun(){const r=S.run;R.runOut.replaceChildren();setLocked(runActive(
   for(const sec of r.sections)R.runOut.append(h('section',{class:'card'},h('h2',{},IC((STEPS[sec.id]||{icon:'doc'}).icon),((STEPS[sec.id]||{tr:sec.id}).tr)+' çıktısı',h('span',{class:'chip def'},PN[sec.provider]||sec.provider),h('span',{class:'chip '+chipCls(sec.status)},SST[sec.status]||sec.status)),
    sec.usedModel?h('p',{class:'why'},'Yanıtın bildirdiği model: '+sec.usedModel):null,h('pre',{class:'modelout'},sec.text||'(boş)')));
   if(r.summary)R.runOut.append(h('p',{class:'note'},'Özet: '+r.summary))}}
+function workspaceCard(w,status){
+ if(!w.readable)return h('div',{class:'banner bad',style:null},IC('alert'),h('div',{},h('b',{},'Çalışma ağacı durumu okunamadı'),h('small',{},'Değişiklikleri elle kontrol edin: git status && git diff')));
+ const files=w.files||[];
+ return h('div',{class:'wsum'},h('h3',{},'Çalışma ağacının gerçek durumu'),
+  h('div',{class:'facts'},h('div',{},h('span',{class:'k'},'Dizin'),h('code',{},w.root||'')),h('div',{},h('span',{class:'k'},'Dal'),h('code',{},w.branch||'ayrık HEAD')),
+   h('div',{},h('span',{class:'k'},'HEAD'),h('code',{},(w.headBefore?w.headBefore.slice(0,8)+' → ':'')+(w.headAfter||'').slice(0,8))),
+   h('div',{},h('span',{class:'k'},'Değişiklik'),h('code',{},files.length+(w.truncated?'+':'')+' dosya, +'+w.added+' −'+w.deleted+' satır'))),
+  w.committed?h('div',{class:'banner bad',style:null},IC('alert'),h('div',{},h('b',{},'HEAD veya bir dal değişmiş'),h('small',{},'Bu araç commit yapmaz; Git geçmişini elle inceleyin.'))):h('p',{class:'why'},'Commit/push yapılmadı: HEAD ve dallar koşu öncesiyle aynı.'),
+  files.length?h('ul',{class:'list'},files.map((f)=>h('li',{},h('code',{},f.path),' ',h('span',{class:'chip def'},f.kind==='new'?'yeni ('+f.bytes+' bayt)':f.added==null?'ikili':'+'+f.added+' −'+(f.deleted||0))))):h('p',{class:'why'},'Çalışma ağacında değişiklik yok.'),
+  h('p',{class:'why'},'Değişiklikler birleştirilmedi ve geri alınmadı. İnceleyin: git -C "'+(w.root||'')+'" status && git diff'))}
 function startTick(){clearInterval(S.tick);S.tick=setInterval(()=>{const e=document.getElementById('elapsed');if(e)e.textContent=elapsed();if(!runActive())clearInterval(S.tick)},1000)}
 async function poll(){clearTimeout(S.timer);
  try{const r=await api('/api/run?from='+S.runCursor);if(r.status==='idle')S.run=null;else{S.runCursor=r.next;if(r.skipped)S.runLines.push('… '+r.skipped+' satır kayıt sınırı nedeniyle atlandı');S.runLines.push(...r.lines);if(S.runLines.length>400)S.runLines.splice(0,S.runLines.length-400);S.run=r}}catch(e){toast(String(e.message||e))}
  drawRun();
  if(runActive())S.timer=setTimeout(poll,700);else{clearInterval(S.tick);loadStatus()}}
-async function startRun(acceptConfirmed){const b=bodyNow();b.confirm=true;if(S.accept)b.confirmAcceptUnverified=acceptConfirmed===true;
+async function startRun(acceptConfirmed,writeConfirmed,verifyConfirmed){const b=bodyNow();b.confirm=true;if(S.accept)b.confirmAcceptUnverified=acceptConfirmed===true;if(S.workflow==='plan-implement-review'){b.confirmWrite=writeConfirmed===true;if(b.verify)b.confirmVerify=verifyConfirmed===true}
  S.previewKey=null;
  try{S.run=await api('/api/run',{method:'POST',body:JSON.stringify(b)});S.runLines=[];S.runCursor=S.run.next||0;S.runLines.push(...(S.run.lines||[]));drawRun();startTick();S.timer=setTimeout(poll,500);R.runOut.scrollIntoView({behavior:'smooth',block:'nearest'})}
  catch(e){toast(String(e.message||e))}}
 async function cancelRun(){try{await api('/api/run/cancel',{method:'POST',body:'{}'});toast('İptal isteği gönderildi.')}catch(e){toast(String(e.message||e))}}
 function confirmRun(){if(!S.result)return;const v=S.result.view;const dlg=h('dialog',{class:'dlg','aria-labelledby':'dlgt'});
+ const pw=S.workflow==='plan-implement-review',vcmd=pw?R.verify.value.trim():'';
  const stp=(id)=>{const s=v.steps.find((x)=>x.id===id);return s?(s.model?s.model.value:'?')+' · efor: '+(s.effort?s.effort.value:'?'):'?'};
  const q=((S.status&&S.status.quota)||[]).map((x)=>PN[x.provider]+': '+x.windows.map((w)=>winName(w.label)+' %'+Math.round(w.usedPercent)).join(', ')).join(' | ')||'okunamadı (tahmin gösterilmez)';
- const c1=h('input',{type:'checkbox',id:'c1'}),c2=S.accept?h('input',{type:'checkbox',id:'c2'}):null;
- const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();startRun(!!c2&&c2.checked)}},IC('play'),h('span',{},'Gerçek çalıştırmayı başlat'));
- const upd=()=>{go.disabled=!(c1.checked&&(!c2||c2.checked))};c1.addEventListener('change',upd);if(c2)c2.addEventListener('change',upd);
+ const c1=h('input',{type:'checkbox',id:'c1'}),c2=S.accept?h('input',{type:'checkbox',id:'c2'}):null,c3=vcmd?h('input',{type:'checkbox',id:'c3'}):null;
+ const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();startRun(!!c2&&c2.checked,c1.checked,!!c3&&c3.checked)}},IC('play'),h('span',{},'Gerçek çalıştırmayı başlat'));
+ const upd=()=>{go.disabled=!(c1.checked&&(!c2||c2.checked)&&(!c3||c3.checked))};for(const c of [c1,c2,c3])if(c)c.addEventListener('change',upd);
+ const pv=(id)=>{const s=v.steps.find((x)=>x.id===id);return s?PN[s.provider]||s.provider:'?'};
+ const facts=pw?[['Çalışma ağacı',R.ws.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['Uygulama (Codex, YAZAR)',stp('implement')],['İnceleme ('+pv('review')+')',stp('review')],['Test komutu',vcmd||'yok']]
+  :[['Proje dizini',R.cwd.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['İnceleme ('+pv('review')+')',stp('review')]];
  dlg.append(h('h2',{id:'dlgt'},IC('alert'),'Gerçek çalıştırmayı onayla'),
-  h('div',{class:'facts'},h('div',{},h('span',{class:'k'},'Proje dizini'),h('code',{},R.cwd.value.trim())),h('div',{},h('span',{class:'k'},'Plan (Claude)'),h('code',{},stp('plan'))),h('div',{},h('span',{class:'k'},'İnceleme (Codex)'),h('code',{},stp('review'))),
+  h('div',{class:'facts'},...facts.map((f)=>h('div',{},h('span',{class:'k'},f[0]),h('code',{},f[1]))),
    h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q)),S.accept?h('div',{},h('span',{class:'k'},'Doğrulanamayan ayarlar'),h('code',{},'KABUL EDİLDİ (--accept-unverified) — gerçek koşuya aktarılır')):null),
-  h('p',{class:'why'},'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Claude araçsız planlar, Codex salt okunur inceler; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
-  h('label',{class:'switch',for:'c1'},c1,h('span',{},'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
+  h('p',{class:'why'},pw?'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Codex yalnızca seçtiğiniz bağlı çalışma ağacına yazar; ana ağaç, commit, push, dal değişikliği ve korumalı yollar yasaktır ve her adımdan sonra Git ile denetlenir. İptal ederseniz o ana kadar yazılanlar geri alınmaz. API anahtarı, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.':'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Claude araçsız planlar, Codex salt okunur inceler; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
+  h('label',{class:'switch',for:'c1'},c1,h('span',{},pw?'Codex’in bu çalışma ağacına dosya yazmasını açıkça onaylıyorum.':'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
+  c3?h('label',{class:'switch',for:'c3'},c3,h('span',{},'“'+vcmd+'” komutunun yeni yazılan kodu model korumasının dışında çalıştırmasını ayrıca onaylıyorum.')):null,
   c2?h('label',{class:'switch',for:'c2'},c2,h('span',{},'Doğrulanamayan ayarları (örn. proxy/TLS değişkenlerinin Claude’a iletilmemesi) gerçek çalıştırma için de kendim kabul ediyorum: --accept-unverified bu koşuya aktarılacak ve o ön kontrol uyarıları aşılacak.')):null,
   h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go));
  document.body.append(dlg);dlg.addEventListener('close',()=>{dlg.remove()});dlg.showModal()}
-async function browse(path){
+async function browse(path,target){
+ const pick=target===R.ws?R.wsPicker:R.picker;
  try{const r=await api('/api/dirs?path='+encodeURIComponent(path||''));const sep=r.path.includes('\\')&&!r.path.includes('/')?'\\':'/';
-  R.picker.hidden=false;
-  R.picker.replaceChildren(h('div',{class:'pkh'},h('code',{},r.path)),
-   r.parent?h('button',{type:'button',class:'pk',onclick:()=>{browse(r.parent)}},'↑ Üst dizin'):null,
-   ...r.dirs.map((d)=>h('button',{type:'button',class:'pk',onclick:()=>{browse(r.path.replace(/[\\/]+$/,'')+sep+d)}},IC('doc'),d)),
+  pick.hidden=false;
+  pick.replaceChildren(h('div',{class:'pkh'},h('code',{},r.path)),
+   r.parent?h('button',{type:'button',class:'pk',onclick:()=>{browse(r.parent,target)}},'↑ Üst dizin'):null,
+   ...r.dirs.map((d)=>h('button',{type:'button',class:'pk',onclick:()=>{browse(r.path.replace(/[\\/]+$/,'')+sep+d,target)}},IC('doc'),d)),
    r.dirs.length===0?h('p',{class:'why',style:null},'Alt dizin yok.'):null,
-   h('div',{class:'pkf'},h('button',{type:'button',class:'chipbtn',onclick:()=>{R.cwd.value=r.path;R.picker.hidden=true;drawRunBtn()}},'Bu dizini seç'),h('button',{type:'button',class:'chipbtn',onclick:()=>{R.picker.hidden=true}},'Kapat')))}
+   h('div',{class:'pkf'},h('button',{type:'button',class:'chipbtn',onclick:()=>{target.value=r.path;pick.hidden=true;drawRunBtn()}},'Bu dizini seç'),h('button',{type:'button',class:'chipbtn',onclick:()=>{pick.hidden=true}},'Kapat')))}
  catch(e){toast(String(e.message||e))}}
 window.addEventListener('beforeunload',(e)=>{if(runActive())e.preventDefault()});
 
@@ -303,7 +325,7 @@ function drawSafety(){
   'Sır, API anahtarı ya da oturum bilgisi gösterilmez veya saklanmaz. Kota yalnızca yerel okumadan gelir; yoksa “veri yok” yazılır.',
   'Sayfa dış kaynak yüklemez (yazı tipi, betik, görsel yok) ve sıkı bir içerik güvenlik ilkesiyle sunulur.',
   'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez; ultracode seçilmez.',
-  'Gerçek çalıştırma yalnızca plan-review içindir: aynı ayarlarla geçen bir önizleme, proje dizini ve açık onay ister; aynı anda tek koşu, adım zaman aşımı, genel süre sınırı ve kota (≥%95 ise başlamaz) uygulanır. plan-implement-review yalnızca önizlenir.',
+  'Gerçek çalıştırma aynı ayarlarla geçen bir önizleme, açık onay ve (plan-implement-review için) bağlı bir çalışma ağacı ister; ağaç önizlemeden sonra değiştiyse koşu başlamaz. Yazma ve test komutu ayrı onaylanır. Aynı anda tek koşu, adım zaman aşımı, genel süre sınırı ve kota (≥%95 ise başlamaz) uygulanır; koşu sonrası özet Git’ten okunur.',
   'CLI ön kontrolü (proxy/TLS, oturum, güvenlik) reddederse bu açıkça gösterilir ve otomatik atlanmaz. API anahtarı geri dönüşü, otomatik commit/push ve yeniden deneme yoktur.',
   'Canlı kayıt ve çıktı gösterilmeden önce bilinen sır kalıplarından (anahtar, token, parola, Bearer) arındırılır; bu en iyi çabadır, tam güvence değildir. Model çıktısı yalnızca metin olarak gösterilir.'].map(li))),
   h('section',{class:'card'},h('h2',{},IC('book'),'Kanıt türleri'),h('ul',{class:'list'},[

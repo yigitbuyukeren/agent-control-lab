@@ -80,7 +80,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         `  ${n(2)} implement [${implementPf.provider}]: ${
           implementPf.provider === 'codex'
             ? `WRITE sandbox limited to the workspace, git ${implementPf.codex?.git ?? 'unknown'}`
-            : `WRITE tools (Edit/Write confined to the workspace by --restricted; terminal: exact git inspection commands only, never the test command; protected files (.env*, .git, .github/workflows, .claude, ...) denied before any edit or read; everything else denied)`
+            : `WRITE tools (Edit/Write confined to the workspace by --restricted; no shell tool, the test command runs only as the local verify step; protected files (.env*, .git, .github/workflows, .claude, ...) denied before any edit or read; everything else denied)`
         }, subscription login: ${stepVerdict(implementPf)}\n` +
         selectionLines(implementPf) +
         stepDetails(implementPf) +

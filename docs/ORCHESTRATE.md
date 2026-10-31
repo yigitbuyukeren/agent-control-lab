@@ -365,12 +365,12 @@ edit files and use the terminal, within these profiles. There is no unrestricted
 | Profile | Allowed in | Claude | Codex |
 |---|---|---|---|
 | `text-only` | plan, review | no tools (legacy mode) | not available |
-| `read-only` (default) | plan, review | Read/Grep/Glob plus exact git inspection commands | read-only sandbox |
-| `workspace-write` (default) | implement only | adds Edit/Write; terminal stays git-inspection only (the confirmed `--verify-command` runs solely as the local verify step after inspection) | workspace-write sandbox |
+| `read-only` (default) | plan, review | Read/Grep/Glob (no shell) | read-only sandbox |
+| `workspace-write` (default) | implement only | adds Edit/Write; still no shell (the confirmed `--verify-command` runs solely as the local verify step after inspection) | workspace-write sandbox |
 
-Claude runs with `--restricted --safe-mode --permission-mode dontAsk` and an allowlist of exact
-commands (no wildcards): everything not listed is denied, file tools stay inside the working directory,
-and protected files (`.env*`, `.git`, `.github/workflows`, `.claude`, `.codex`, `.husky`, `.npmrc`, `CLAUDE.md`, `AGENTS.md`, ...) are denied for Edit/Write (and secrets/git internals for Read) through Claude permission deny rules before anything runs; the Git inspection afterwards remains a second layer. `bypassPermissions` / `--dangerously-skip-permissions` are never built. Writing needs the existing
+Claude runs with `--restricted --safe-mode --permission-mode dontAsk` and no shell tool: the official docs say built-in
+read-only Bash commands (cat, grep, git diff, ...) run without approval in every mode and bypass path rules, so Bash is absent and denied. Everything not allowed is denied, file tools stay inside the working directory,
+and protected files (`.env*`, `.git`, `.github/workflows`, `.claude`, `.codex`, `.husky`, `.npmrc`, `CLAUDE.md`, `AGENTS.md`, ...) are denied for Edit/Write (and secrets/git internals for Read) through `Edit(path)`/`Read(path)` deny rules (`Write(path)` never matches, so none are used) before anything runs; the Git inspection afterwards remains a second layer. `bypassPermissions` / `--dangerously-skip-permissions` are never built. Writing needs the existing
 `--workspace` (a verified linked worktree) and `--confirm-write`; the Git inspection, change limits,
 verify gate, quota and preflight checks apply unchanged to either provider. The tooled Claude flags are
 checked against the installed `claude --help` and the run is refused when any is missing.

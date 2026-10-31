@@ -54,7 +54,7 @@ describe('plan-review workflow', () => {
     expect(result.status).toBe('completed');
     const [claude, codex] = specs;
     expect(claude).toMatchObject({ command: 'claude', cwd: '/repo', timeoutMs: 5000 });
-    expect(claude?.args).toEqual(expect.arrayContaining(['-p', '--tools', 'Read,Grep,Glob,Bash', '--permission-mode', 'dontAsk', '--restricted', '--safe-mode', '--no-session-persistence']));
+    expect(claude?.args).toEqual(expect.arrayContaining(['-p', '--tools', 'Read,Grep,Glob', '--permission-mode', 'dontAsk', '--restricted', '--safe-mode', '--no-session-persistence']));
     expect(codex).toMatchObject({ command: 'codex', cwd: '/repo', timeoutMs: 5000 });
     expect(codex?.args).toEqual(expect.arrayContaining(['exec', '-s', 'read-only', '--ephemeral']));
     expect(Object.keys(codex?.env ?? {})).not.toContain('OPENAI_API_KEY');
@@ -139,7 +139,7 @@ describe('plan-implement-review workflow', () => {
     expect(result.status).toBe('completed');
     expect(specs.map((s) => [s.command, s.cwd])).toEqual([['claude', '/ws'], ['codex', '/ws'], ['claude', '/ws']]);
     expect(specs[1]?.args).toEqual(expect.arrayContaining(['exec', '-s', 'workspace-write', '--ephemeral']));
-    for (const index of [0, 2]) expect(specs[index]?.args).toEqual(expect.arrayContaining(['--tools', 'Read,Grep,Glob,Bash', '--permission-mode', 'dontAsk', '--restricted']));
+    for (const index of [0, 2]) expect(specs[index]?.args).toEqual(expect.arrayContaining(['--tools', 'Read,Grep,Glob', '--permission-mode', 'dontAsk', '--restricted']));
     expect(Object.keys(specs[1]?.env ?? {})).not.toContain('OPENAI_API_KEY');
   });
 

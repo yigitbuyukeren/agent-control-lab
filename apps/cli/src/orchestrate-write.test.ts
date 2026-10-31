@@ -726,21 +726,20 @@ describe('provider x profile matrix (fake agents, real Git worktree)', () => {
     expect(r.out).toContain('Nothing was committed or pushed');
   });
 
-  it('a Claude implementation gets Edit/Write and exact git commands, and never the confirmed test command', async () => {
-    const claude = ['--step-provider', 'implement=claude'];
-    const noVerify = await go([...WRITE(), ...claude], { onClaude: (spec) => { editFile()(spec); } });
-    const impl = noVerify.specs.filter((s) => s.command === 'claude')[1];
-    const allowed = impl?.args.slice((impl.args.indexOf('--allowedTools')) + 1, impl.args.indexOf('--disallowedTools')) ?? [];
-    expect(allowed).toEqual(expect.arrayContaining(['Edit', 'Write', 'Bash(git status --short)']));
-    expect(allowed.some((a) => a.includes('*'))).toBe(false);
-    expect(allowed.some((a) => a.includes('pnpm'))).toBe(false);
-    git(wt, 'checkout', '-q', '--', '.');
-    git(wt, 'clean', '-qfd');
-    const withVerify = await go([...WRITE(), ...claude, '--verify-command', 'pnpm test', '--confirm-verify'], { onClaude: (spec) => { editFile()(spec); } });
-    const impl2 = withVerify.specs.filter((s) => s.command === 'claude')[1];
-    expect(impl2?.args.some((a) => a.startsWith('Bash(pnpm'))).toBe(false);
-    // The confirmed command runs only as the local verify step, after the inspection.
-    expect(withVerify.specs.map((s) => s.command)).toEqual(['claude', 'claude', 'pnpm', 'claude']);
+  it('a Claude implementation gets Edit/Write but no shell, and the confirmed test command runs only as the local verify step', async () => {
+    const claude = ['--step-provider', 'implement=claude', '--verify-command', 'pnpm test', '--confirm-verify'];
+    const r = await go([...WRITE(), ...claude], { onClaude: (spec) => { editFile()(spec); } });
+    const calls = r.specs.filter((s) => s.command === 'claude');
+    for (const spec of calls) {
+      const tools = (spec.args[spec.args.indexOf('--tools') + 1] ?? '').split(',');
+      expect(tools).not.toContain('Bash');
+      expect(spec.args.some((a) => a.startsWith('Bash(') || a.includes('pnpm test'))).toBe(false);
+      expect(spec.args).toContain('Edit(**/.env)');
+      expect(spec.args).not.toContain('Write(**/.env)');
+    }
+    const impl = calls[1];
+    expect(impl?.args[(impl.args.indexOf('--tools')) + 1]).toContain('Edit');
+    expect(r.specs.map((s) => s.command)).toEqual(['claude', 'claude', 'pnpm', 'claude']);
   });
 
   it('refuses profiles that could write outside the implementation step or that a provider lacks', async () => {

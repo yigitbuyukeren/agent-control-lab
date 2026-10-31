@@ -79,37 +79,32 @@ export interface ClaudeToolPolicy {
   readonly profile: PermissionProfile;
 }
 
-/** Exact commands, never wildcards: `git diff *` would also allow `--output=<path>`, a write outside the workspace. */
-export const CLAUDE_READ_COMMANDS: readonly string[] = [
-  'git status --short',
-  'git diff --no-ext-diff --no-textconv',
-  'git diff --no-ext-diff --no-textconv --stat',
-  'git log --oneline -20',
-  'git ls-files',
-];
+/**
+ * No shell tool at all. Per the official permission docs, built-in "read-only" Bash commands (cat, grep, find,
+ * git diff, ...) run without approval in every mode, the set is not configurable, and Read/Edit deny rules do not
+ * cover commands that read files without naming them or subprocesses. A shell would therefore bypass the
+ * protected-path rules, so none is offered: `Bash` is absent from `--tools` and denied by its bare name.
+ * Verification commands run only as the host's local verify step.
+ */
+const CLAUDE_DENY_RULES: readonly string[] = ['Bash', 'WebFetch', 'WebSearch', 'NotebookEdit'];
 
-const CLAUDE_DENY_RULES: readonly string[] = [
-  ...['commit', 'push', 'checkout', 'switch', 'reset', 'stash', 'merge', 'rebase', 'branch', 'config', 'clean', 'worktree'].map((c) => `Bash(git ${c} *)`),
-  'Bash(rm *)', 'Bash(sudo *)', 'Bash(curl *)', 'Bash(wget *)', 'Bash(ssh *)',
-];
-
-/** Built-in tools of a tooled profile; `--restricted` re-adds Bash only because it is named here. */
+/** Built-in tools of a tooled profile; without Bash nothing can run a command. */
 export function claudeTools(profile: PermissionProfile): string[] {
-  return profile === 'workspace-write' ? ['Read', 'Grep', 'Glob', 'Edit', 'Write', 'Bash'] : ['Read', 'Grep', 'Glob', 'Bash'];
+  return profile === 'workspace-write' ? ['Read', 'Grep', 'Glob', 'Edit', 'Write'] : ['Read', 'Grep', 'Glob'];
 }
 
 export function claudeAllowRules(policy: ClaudeToolPolicy): string[] {
   return [
     'Read', 'Grep', 'Glob',
     ...(policy.profile === 'workspace-write' ? ['Edit', 'Write'] : []),
-    ...CLAUDE_READ_COMMANDS.map((c) => `Bash(${c})`),
   ];
 }
 
 /**
- * Official permission rules (gitignore-style paths, relative to the working directory; deny wins over allow),
- * mirroring `isProtectedPath`. `Edit` rules cover every file-editing tool; `Read` rules cover Read and, best
- * effort, Grep/Glob. Applied in every tooled profile, before anything runs.
+ * Official permission rules (gitignore-style paths relative to the working directory; deny wins over allow),
+ * mirroring `isProtectedPath`. Only `Edit(path)` and `Read(path)` are ever matched: `Edit` covers every built-in
+ * file-editing tool (Write included) and `Read` covers Read and, best effort, Grep/Glob; a `Read` deny also blocks
+ * Edit/Write on the same path. `Write(path)` rules never match, so none are built. Applied in every tooled profile.
  */
 const PROTECTED_DIRS = ['.git', '.claude', '.codex', '.husky'];
 const PROTECTED_FILES = ['.env', '.env.*', '.npmrc', '.yarnrc', '.yarnrc.yml', '.pnpmrc', '.gitmodules', '.gitattributes', 'CLAUDE.md', 'AGENTS.md', 'claude.md', 'agents.md'];
@@ -120,7 +115,7 @@ export function claudeProtectedPathRules(): string[] {
   const dirs = [...PROTECTED_DIRS.map((d) => `**/${d}/**`), '.github/workflows/**'];
   const files = PROTECTED_FILES.map((f) => `**/${f}`);
   return [
-    ...[...dirs, ...files].flatMap((p) => [`Edit(${p})`, `Write(${p})`]),
+    ...[...dirs, ...files].map((p) => `Edit(${p})`),
     ...[...dirs, ...files.filter((_f, i) => !READABLE_PROTECTED.has(PROTECTED_FILES[i] ?? ''))].map((p) => `Read(${p})`),
   ];
 }

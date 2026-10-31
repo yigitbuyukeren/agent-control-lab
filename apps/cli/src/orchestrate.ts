@@ -246,7 +246,7 @@ export function readOnlyMode(pf: StepPreflight): string {
   if (pf.provider === 'codex') return `read-only sandbox, git ${pf.codex?.git ?? 'unknown'}`;
   return pf.profile === 'text-only'
     ? 'tool-less, no session persistence'
-    : 'read-only tools (Read/Grep/Glob and exact git inspection commands; every write and other command denied), no session persistence';
+    : 'read-only tools (Read/Grep/Glob only, no shell; protected files denied; every write denied), no session persistence';
 }
 
 export async function runOrchestrateCommand(args: OrchestrateArgs, io: OrchestrateIo, deps: OrchestrateDeps): Promise<number> {

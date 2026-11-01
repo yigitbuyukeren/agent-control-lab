@@ -40,6 +40,44 @@ describe('discoverWorkspaces', () => {
     expect(rels(d)).not.toContain('notes');
   });
 
+  it('finds twenty independent repositories and picks the right one only when the task is clear', async () => {
+    const names = Array.from({ length: 20 }, (_, i) => `svc-${String(i).padStart(2, '0')}-${['billing', 'auth', 'search', 'mail', 'ui'][i % 5] ?? ''}`);
+    for (const n of names) await dir(n, '.git');
+    const d = await discover();
+    expect(d.candidates.filter((c) => c.kind === 'git-repo')).toHaveLength(20);
+    expect(d.truncated).toBe(false);
+    expect(suggestWorkspace(`fix the ${names[8] ?? ''} retry bug`, d.candidates).state).toBe('suggested');
+    // "billing" matches four repositories, so nothing is chosen for the user.
+    expect(suggestWorkspace('fix the billing retry bug', d.candidates).state).toBe('ambiguous');
+    expect(suggestWorkspace('write release notes', d.candidates).state).toBe('none');
+  });
+
+  it('keeps same-named projects apart by relative path and never auto-selects between them', async () => {
+    await dir('team-a', 'ledger', '.git');
+    await dir('team-b', 'ledger', '.git');
+    await dir('tools');
+    await file('tools/package.json', '{"name":"ledger"}');
+    const d = await discover();
+    expect(rels(d)).toEqual(expect.arrayContaining(['team-a/ledger', 'team-b/ledger', 'tools']));
+    expect(selectWorkspace(d.candidates, 'ledger').ok).toBe(false);
+    const picked = selectWorkspace(d.candidates, 'team-b/ledger');
+    expect(picked.ok && picked.candidate.relative).toBe('team-b/ledger');
+    expect(suggestWorkspace('update the ledger', d.candidates).state).toBe('ambiguous');
+  });
+
+  it('supports a monorepo that contains an independent nested repository and a non-Git project at once', async () => {
+    await dir('mono', '.git');
+    await file('mono/pnpm-workspace.yaml', 'packages:\n  - packages/*\n');
+    await dir('mono', 'packages', 'core');
+    await file('mono/packages/core/package.json', '{"name":"@m/core"}');
+    await dir('mono', 'extras', 'lib', '.git');
+    await dir('loose');
+    await file('loose/pyproject.toml');
+    const d = await discover();
+    expect(rels(d)).toEqual(expect.arrayContaining(['mono', 'mono/packages/core', 'mono/extras/lib', 'loose']));
+    expect(d.candidates.find((c) => c.relative === 'mono/extras/lib')?.nestedIn).toBeDefined();
+  });
+
   it('marks monorepo packages and the monorepo itself', async () => {
     await dir('.git');
     await file('pnpm-workspace.yaml');

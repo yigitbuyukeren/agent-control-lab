@@ -92,7 +92,7 @@ Commands:
                         Claude drafts a plan, Codex reviews it read-only (plan/review providers are choosable: --step-provider; every step has a permission profile, --step-profile step=read-only|text-only (Claude only); plan/review default to read-only); stops at the first failure (no retry, no fallback)
   orchestrate ... --with-instructions    (either workflow: pass the project's CLAUDE.md/AGENTS.md text to the model steps as bounded untrusted data; off by default)
   orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
-                        Claude plans, Codex WRITES in that worktree only, limits are checked, Claude reviews the diff; no commit or push (plan/review providers choosable; implement always Codex, no Claude write runner)
+                        By default Claude plans, Codex WRITES in that worktree only, limits are checked, Claude reviews the diff; no commit or push (plan, implement and review providers are choosable; the implement step is the only writer)
   run --provider <codex|claude> --task "<text>" --dry-run [...]
                         Show the run plan without starting any agent
   models                List known models and efforts (Claude: documented, unverified; Codex: discovered)

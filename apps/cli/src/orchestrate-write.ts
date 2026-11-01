@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { applyInstructionContext } from './instruction-pass.ts';
-import { recordTask } from './task-recorder.ts';
+import { beginTask, recordTask } from './task-recorder.ts';
 import { relative } from 'node:path';
 import {
   DEFAULT_LIMITS,
@@ -162,6 +162,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     ...(deps.env === undefined ? {} : { env: deps.env }),
     ...(deps.nonce === undefined ? {} : { nonce: deps.nonce }),
   });
+  const begun = await beginTask(deps.tasks, args.record !== false, { workflow: args.workflow, cwd, now: (deps.now ?? (() => new Date()))(), git: gitDeps });
   const withCtx = await applyInstructionContext(built, args.withInstructions === true, cwd, (deps.nonce ?? randomUUID)());
   io.error(withCtx.line);
   const steps = withCtx.steps;
@@ -175,7 +176,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   });
   io.out(formatResult(result));
   io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, args.evalGroup, (deps.now ?? (() => new Date()))()));
-  io.error(await recordTask(deps.tasks, args.record !== false, { workflow: args.workflow, cwd, result, now: (deps.now ?? (() => new Date()))(), git: gitDeps }));
+  io.error(await recordTask(deps.tasks, args.record !== false, { workflow: args.workflow, cwd, result, begun, now: (deps.now ?? (() => new Date()))(), git: gitDeps }));
   const wrote = result.steps.some((s) => s.id === 'implement' && s.status !== 'skipped' && s.status !== 'pending');
   const partial = wrote && result.status !== 'completed' ? 'The workspace may contain partial changes; nothing was reverted. ' : '';
   io.out(

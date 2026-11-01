@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { TaskStore, type WorkflowResult } from '@agent-control-lab/core';
 import { gitSync, makeWorktreeFixture } from '../../../packages/core/src/git-fixture.ts';
 import { run } from './main.ts';
-import { recordTask } from './task-recorder.ts';
+import { beginTask, recordTask } from './task-recorder.ts';
 import { runTasksCommand } from './tasks-cmd.ts';
 
 const io = () => {
@@ -104,5 +104,34 @@ describe('worktree command', () => {
     expect(await runWorktreeCommand(['remove', id, '--confirm'], d.io, data)).toBe(0);
     expect(await runWorktreeCommand(['bogus'], d.io, data)).toBe(2);
     expect(await runWorktreeCommand(['list'], d.io, undefined)).toBe(1);
+  });
+});
+
+describe('crash visibility', () => {
+  it('leaves a running record at start that shows as interrupted when the process is gone, and one record after a normal finish', async () => {
+    const fx = makeWorktreeFixture();
+    const dir = mkdtempSync(join(tmpdir(), 'acl crash '));
+    const begun = await beginTask(new TaskStore(dir), true, { workflow: 'plan-implement-review', cwd: fx.wt, now: new Date(), pid: 999_999 });
+    expect(begun).toBeDefined();
+    const afterCrash = new TaskStore(dir, { pidAlive: () => false });
+    const t = (await afterCrash.list())[0];
+    expect(t?.ok && t.packet.status).toBe('interrupted');
+    const c = io();
+    expect(await runTasksCommand(['list'], c.io, afterCrash)).toBe(0);
+    expect(c.out.join('')).toContain('its process is gone');
+    // A normal finish updates the same record instead of adding another one.
+    const store = new TaskStore(dir);
+    await recordTask(store, true, { workflow: 'plan-implement-review', cwd: fx.wt, result: result('completed'), now: new Date(), begun });
+    const all = await store.list();
+    expect(all).toHaveLength(1);
+    expect(all[0]?.ok && all[0].packet.status).toBe('completed');
+    expect(all[0]?.ok && all[0].packet.taskId).toBe(begun?.taskId);
+    expect(all[0]?.ok && all[0].packet.owner).toBeUndefined();
+  });
+
+  it('writes nothing when recording is off', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'acl crash '));
+    expect(await beginTask(new TaskStore(dir), false, { workflow: 'x', cwd: '.', now: new Date() })).toBeUndefined();
+    expect(await new TaskStore(dir).list()).toEqual([]);
   });
 });

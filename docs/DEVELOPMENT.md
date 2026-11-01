@@ -1,11 +1,12 @@
-# Geliştirme
+# Development
 
-Bu proje için çalışma kuralları:
+```bash
+pnpm install
+pnpm check            # typecheck, lint, tests
+pnpm cli <command>    # run from source
+pnpm build            # dist/agent-control-lab.js (single bundled file)
+pnpm pack:release     # release/agent-control-lab-<version>.tgz + .sha256
+pnpm smoke:pack       # install that tarball in an empty folder and run it
+```
 
-- Minimum token ve çaba: gereksiz araştırma, planlama ve uzun açıklama yok.
-- Yalnızca istenen kapsamda çalış; mevcut mimariyi koru.
-- Her anlamlı görev sonunda `pnpm check` (typecheck, lint, test) ve `git diff` kontrolü yap.
-- Başarılı değişiklikleri commit+push yap, GitHub CI sonucunu kontrol et.
-- CI başarısızsa düzelt; bekliyorsa başarılı olduğunu iddia etme.
-- Sonuç bildirimi kısa olsun: SHA, test sonucu, CI durumu, varsa hata.
-- Bu depo dışındaki projelere dokunma.
+See [CONTRIBUTING.md](../CONTRIBUTING.md) and [ARCHITECTURE.md](ARCHITECTURE.md).

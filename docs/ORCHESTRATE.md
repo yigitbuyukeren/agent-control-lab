@@ -76,21 +76,26 @@ It acts only on **verified** data and otherwise keeps the provider default, sayi
 
 The dry run prints the policy line and, per step, the effort with the policy's reason.
 
-# plan-implement-review (infrastructure, first stage)
+# plan-implement-review
 
 ```
 orchestrate --workflow plan-implement-review --task "<text>" --workspace <linked worktree> --dry-run
 orchestrate --workflow plan-implement-review --task "<text>" --workspace <linked worktree> --confirm-write [--accept-unverified] [--allow-partial-ignored-check] [--verify-command "pnpm test" --confirm-verify] [--timeout <seconds per step>]
 ```
 
-Claude plans (tool-less) → Codex implements with the `workspace-write` sandbox → a local step
+By default Claude plans (tool-less) → Codex implements with the `workspace-write` sandbox → a local step
 inspects the workspace → optional local verification → Claude reviews the diff (tool-less).
-`plan-review` is unchanged and still read-only. This stage is infrastructure covered by mock
-and fake-CLI tests; it has not been run against real models.
+`plan-review` is unchanged and still read-only. Providers are choosable per step (`--step-provider plan=…`,
+`implement=…`, `review=…`); the defaults above are only defaults.
+
+**Evidence level.** The behaviour is covered by deterministic tests with fake CLIs and real Git. On 31 October 2026 a live
+run was also observed by the project owner: a Claude → Claude → Codex step chain wrote a README in an isolated worktree. The Git diff
+of that run was checked afterwards; the verification (test) command was **not** run in that session. That single observation is the only
+live-model evidence; nothing here claims more (no benchmark, no repeated runs, no Windows or Linux live runs).
 
 ## Who may write, and where
 
-- The only writer is the Codex implementation step, and only in `--workspace`. Writing needs
+- The only writer is the implementation step (Codex or Claude, whichever is chosen), and only in `--workspace`. Writing needs
   `--confirm-write`; `--confirm` alone is refused, and `--dry-run` never writes.
 - The workspace must already exist. It is never created, switched, reset or cleaned. It must be
   the **root of a linked Git worktree** (not the main working tree) on a **branch of its own**:
@@ -143,8 +148,22 @@ plain words starting with `pnpm npm yarn bun deno node pytest python python3 car
 gradle swift`; shell syntax is rejected, not interpreted. It runs without a shell in the workspace with
 a cleaned environment (no API keys or proxy variables), a timeout, and process-tree kill.
 
-**It still executes code the model just wrote, outside any model sandbox. There is no portable sandbox
-for it; this is risk reduction, not isolation.** What is added:
+**It executes code the model just wrote.** Since 1.0 it runs inside an operating-system sandbox when the
+tool can *prove* one works on this machine, and is refused otherwise:
+
+- macOS: `sandbox-exec` with a deny-by-default profile; Linux: bubblewrap (`bwrap`). Windows has no supported sandbox here
+  (use WSL2 with bubblewrap).
+- The sandbox allows writing only to the worktree and a private temp directory, no network, and denies reading a list of
+  credential locations (`~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.config/gh`, `~/.claude`, `~/.codex`, ...). Reads of other files
+  stay possible: it is a read deny-list, not a full filesystem jail.
+- "Works" means a probe passed just before the run: a write inside the worktree succeeds; a write elsewhere, a read of a
+  protected file and a TCP connection to a local listener all fail. `--dry-run` prints the result (`sandbox: ...`).
+- No working sandbox: the command is **not run** and the step says why. `--verify-unsandboxed` (with `--confirm-verify`)
+  is the explicit, separate choice to run it with your full user rights; it also skips the sandbox when one exists.
+  The GUI offers it as an unchecked option in the confirmation dialog.
+
+Package installs and anything that needs the network or writes caches outside the worktree will fail inside the sandbox;
+that is intended. What is added besides the sandbox:
 
 - before running, verification is **refused** if the step changed a file that decides what a test or
   build runs (`package.json`, `Makefile`, `pyproject.toml`, `conftest.py`, `Cargo.toml`, `build.rs`,
@@ -374,4 +393,4 @@ and protected files (`.env*`, `.git`, `.github/workflows`, `.claude`, `.codex`, 
 `--workspace` (a verified linked worktree) and `--confirm-write`; the Git inspection, change limits,
 verify gate, quota and preflight checks apply unchanged to either provider. The tooled Claude flags are
 checked against the installed `claude --help` and the run is refused when any is missing.
-The tooled behaviour was verified against flag definitions and fake agents only; no real model was called.
+The tooled Claude behaviour is verified against flag definitions and fake agents; the only live observation is the one described under plan-implement-review.

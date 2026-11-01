@@ -1,7 +1,7 @@
 import type { SandboxDecision, TaskStore } from '@agent-control-lab/core';
 import { randomUUID } from 'node:crypto';
 import { applyInstructionContext } from './instruction-pass.ts';
-import { recordTask } from './task-recorder.ts';
+import { beginTask, recordTask } from './task-recorder.ts';
 import {
   DEFAULT_RUN_TIMEOUT_MS,
   MANAGED_POLICY_LIMIT,
@@ -326,6 +326,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     ...(deps.env === undefined ? {} : { env: deps.env }),
     ...(deps.nonce === undefined ? {} : { nonce: deps.nonce }),
   });
+  const begun = await beginTask(deps.tasks, args.record !== false, { workflow: args.workflow, cwd, now: (deps.now ?? (() => new Date()))(), ...(deps.runner === undefined ? {} : { git: { runner: deps.runner } }) });
   const withCtx = await applyInstructionContext(built, args.withInstructions === true, cwd, (deps.nonce ?? randomUUID)());
   io.error(withCtx.line);
   const steps = withCtx.steps;
@@ -339,6 +340,6 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
   });
   io.out(formatResult(result));
   io.error(await recordRun(deps.outcomes, args.record !== false, args.workflow, args.task, chosen.requests, result, args.evalGroup, (deps.now ?? (() => new Date()))()));
-  io.error(await recordTask(deps.tasks, args.record !== false, { workflow: args.workflow, cwd, result, now: (deps.now ?? (() => new Date()))(), ...(deps.runner === undefined ? {} : { git: { runner: deps.runner } }) }));
+  io.error(await recordTask(deps.tasks, args.record !== false, { workflow: args.workflow, cwd, result, begun, now: (deps.now ?? (() => new Date()))(), ...(deps.runner === undefined ? {} : { git: { runner: deps.runner } }) }));
   return result.status === 'completed' ? 0 : result.status === 'cancelled' ? 130 : 1;
 }

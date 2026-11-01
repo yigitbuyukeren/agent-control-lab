@@ -11,6 +11,49 @@ import {
 } from '@agent-control-lab/core';
 import { basename } from 'node:path';
 
+export interface BegunTask {
+  readonly taskId: string;
+  readonly createdAt: string;
+}
+
+/**
+ * Writes the "running" record before the first step starts, so that a crash, kill or power loss leaves evidence: the next
+ * `tasks` call sees a running task whose process is gone and shows it as interrupted. Never throws.
+ */
+export async function beginTask(
+  store: TaskStore | undefined,
+  enabled: boolean,
+  input: { workflow: string; cwd: string; git?: GitReadDeps; now: Date; pid?: number },
+): Promise<BegunTask | undefined> {
+  if (store === undefined || !enabled) return undefined;
+  try {
+    const at = input.now.toISOString();
+    const snap = await snapshotWorkspace(input.cwd, input.git);
+    const taskId = newTaskId();
+    await store.save({
+      schemaVersion: 1,
+      taskId,
+      createdAt: at,
+      updatedAt: at,
+      status: 'running',
+      label: input.workflow,
+      project: { root: input.cwd, name: basename(input.cwd) },
+      scope: { ...(snap.ok ? { repoRoot: snap.snapshot.root } : {}), createdByTool: false },
+      git: snap.ok ? { head: snap.snapshot.head, ...(snap.snapshot.branch === undefined ? {} : { branch: snap.snapshot.branch }), clean: snap.snapshot.dirty.length === 0 } : { head: '0'.repeat(40), clean: false },
+      instructions: [],
+      acceptance: [],
+      changes: [],
+      evidence: [],
+      openItems: ['run in progress'],
+      stages: [],
+      owner: { pid: input.pid ?? process.pid },
+    });
+    return { taskId, createdAt: at };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Stores a short, privacy-preserving record of a finished run: no prompt, no model output, no plan text.
  * Git facts and the local inspection/test steps are marked `verified`; model statements are marked `agent`.
@@ -19,7 +62,7 @@ import { basename } from 'node:path';
 export async function recordTask(
   store: TaskStore | undefined,
   enabled: boolean,
-  input: { workflow: string; cwd: string; result: WorkflowResult; planText?: string; git?: GitReadDeps; now: Date; pid?: number },
+  input: { workflow: string; cwd: string; result: WorkflowResult; planText?: string; git?: GitReadDeps; now: Date; pid?: number; begun?: BegunTask | undefined },
 ): Promise<string> {
   if (store === undefined) return '';
   if (!enabled) return 'task history: not recorded (--no-record)\n';
@@ -31,8 +74,8 @@ export async function recordTask(
     const stages = input.result.steps.flatMap((s) => (s.provider === 'local' ? [] : [{ id: s.id, provider: s.provider, status: s.status, endedAt: at }]));
     const packet: HandoffPacket = {
       schemaVersion: 1,
-      taskId: newTaskId(),
-      createdAt: at,
+      taskId: input.begun?.taskId ?? newTaskId(),
+      createdAt: input.begun?.createdAt ?? at,
       updatedAt: at,
       status,
       label: input.workflow,

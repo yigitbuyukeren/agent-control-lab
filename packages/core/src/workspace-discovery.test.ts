@@ -88,7 +88,7 @@ describe('discoverWorkspaces', () => {
     await file('packages/cli/package.json', '{"name":"@mono/cli"}');
     const d = await discover();
     expect(d.candidates.find((c) => c.relative === '.')).toMatchObject({ kind: 'git-repo', monorepo: true });
-    const core = d.candidates.find((c) => c.relative === join('packages', 'core'));
+    const core = d.candidates.find((c) => c.relative === 'packages/core');
     expect(core).toMatchObject({ kind: 'package', packageName: '@mono/core', repoRoot: d.root, monorepo: false });
   });
 
@@ -102,7 +102,7 @@ describe('discoverWorkspaces', () => {
     const d = await discover();
     const inner = d.candidates.find((c) => c.relative === 'inner');
     expect(inner).toMatchObject({ kind: 'git-repo', nestedIn: d.root, repoRoot: join(d.root, 'inner') });
-    expect(d.candidates.find((c) => c.relative === join('inner', 'pkg'))).toMatchObject({ kind: 'package', repoRoot: join(d.root, 'inner') });
+    expect(d.candidates.find((c) => c.relative === 'inner/pkg')).toMatchObject({ kind: 'package', repoRoot: join(d.root, 'inner') });
     expect(d.candidates.find((c) => c.relative === '.')?.nestedIn).toBeUndefined();
   });
 
@@ -184,7 +184,7 @@ describe('discoverWorkspaces', () => {
     await file('a/b/c/package.json');
     const shallow = await discoverWorkspaces(base, { maxDepth: 1, maxDirs: 100, maxCandidates: 10 });
     if ('error' in shallow) throw new Error(shallow.error);
-    expect(shallow.skipped).toContainEqual({ relative: join('a', 'b'), reason: 'depth-limit' });
+    expect(shallow.skipped).toContainEqual({ relative: 'a/b', reason: 'depth-limit' });
     for (const n of ['p1', 'p2', 'p3']) {
       await dir(n);
       await file(`${n}/package.json`);

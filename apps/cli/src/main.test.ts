@@ -15,7 +15,7 @@ async function capture(argv: string[], exec?: Exec) {
 
 describe('cli', () => {
   it('prints the version', async () => {
-    expect(await capture(['version'])).toMatchObject({ code: 0, out: '1.0.0\n' });
+    expect(await capture(['version'])).toMatchObject({ code: 0, out: '1.0.1\n' });
   });
   it('prints help by default', async () => {
     expect((await capture([])).out).toContain('Usage:');

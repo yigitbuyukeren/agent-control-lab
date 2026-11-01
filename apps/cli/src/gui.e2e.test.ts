@@ -34,6 +34,7 @@ let stdin = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', (d) 
 process.stdin.on('end', () => {
   if (args[0] === 'exec') fs.appendFileSync(path.join(__dirname, 'calls.log'), 'codex\\n');
   if (args[0] === 'exec' && mode.write && args.includes('workspace-write')) fs.writeFileSync(path.join(process.cwd(), 'new.txt'), 'hello\\n');
+  if (mode.codex === 'fail' && args[0] === 'exec') { console.error('codex exploded'); process.exit(1); }
   if (mode.codex === 'hang' && args[0] === 'exec') { setInterval(() => undefined, 1000); return; }
   console.log('VERDICT: approve');
 });
@@ -45,6 +46,7 @@ let proj = '';
 let child: ChildProcess | undefined;
 let base = '';
 let token = '';
+let cliEnv: Record<string, string> = {};
 
 function shim(name: string, script: string): void {
   writeFileSync(join(bin, `fake-${name}.js`), script);
@@ -73,6 +75,8 @@ beforeAll(async () => {
   }
   env['PATH'] = [bin, process.env['PATH'] ?? process.env['Path'] ?? ''].join(delimiter);
   Object.assign(env, { CLAUDE_CONFIG_DIR: join(root, 'config'), HOME: home, USERPROFILE: home, ACL_CACHE_DIR: join(home, 'acl-cache') });
+  cliEnv = env;
+  execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'init'], { cwd: proj, stdio: 'ignore' });
   child = spawn(process.execPath, [cli, 'gui', '--port', '0'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
   base = await new Promise<string>((resolve, reject) => {
     let buf = '';
@@ -142,6 +146,77 @@ describe('GUI plan-review run against fake CLIs (no model is contacted)', () => 
     const preview = (await (await api('/api/dry-run', req())).json()) as { view: { verdict: string } };
     expect(preview.view.verdict).toBe('would-refuse');
     expect((await api('/api/run', { ...req(), confirm: true })).status).toBe(409);
+  }, 60_000);
+});
+
+const tasksCli = (...args: string[]): { code: number; out: string } => {
+  try {
+    return { code: 0, out: execFileSync(process.execPath, [cli, 'tasks', ...args], { env: cliEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }) };
+  } catch (e) {
+    const err = e as { status?: number; stdout?: string };
+    return { code: err.status ?? 1, out: err.stdout ?? '' };
+  }
+};
+type TaskItems = { items: { taskId?: string; id?: string; status?: string; packet?: { taskId: string; status: string } }[] };
+const guiTasks = async (): Promise<{ id: string; status: string }[]> => {
+  const t = (await (await api('/api/tasks')).json()) as TaskItems;
+  return t.items.map((x) => ({ id: x.packet?.taskId ?? x.taskId ?? x.id ?? '', status: x.packet?.status ?? x.status ?? '' }));
+};
+const runTo = async (over: Record<string, unknown>): Promise<Snap> => {
+  expect((await api('/api/dry-run', req(over))).status).toBe(200);
+  expect((await api('/api/run', { ...req(over), confirm: true })).status).toBe(202);
+  return settle();
+};
+
+describe('GUI task history is opt-in and never written by a preview (fake CLIs, no model is contacted)', () => {
+  it('records nothing for a preview (even with the option on) and for a real run with the option off', async () => {
+    setMode();
+    const before = (await guiTasks()).length;
+    await api('/api/dry-run', req({ recordHistory: true }));
+    expect((await runTo({ recordHistory: false })).status).toBe('completed');
+    expect((await runTo({})).status).toBe('completed');
+    expect(await guiTasks()).toHaveLength(before);
+  }, 60_000);
+
+  it('records a completed run when opted in, and tasks, resume-check and the GUI list agree', async () => {
+    setMode();
+    const before = new Set((await guiTasks()).map((t) => t.id));
+    expect((await runTo({ recordHistory: true })).status).toBe('completed');
+    const fresh = (await guiTasks()).filter((t) => !before.has(t.id));
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0]?.status).toBe('completed');
+    const id = fresh[0]?.id ?? '';
+    const listed = tasksCli('list');
+    expect(listed.out).toContain(id);
+    expect(listed.out).not.toContain('PLAN: add the flag');
+    const check = tasksCli('resume-check', id);
+    expect(check.out).toContain(`${id}: do not continue blindly: already-finished`);
+    expect(check.out).not.toContain('head-changed');
+    expect(tasksCli('show', id).out).not.toContain('PLAN: add the flag');
+  }, 60_000);
+
+  it('records a failed run as failed', async () => {
+    setMode({ codex: 'fail' });
+    const before = new Set((await guiTasks()).map((t) => t.id));
+    expect((await runTo({ recordHistory: true })).status).toBe('failed');
+    const fresh = (await guiTasks()).filter((t) => !before.has(t.id));
+    expect(fresh.map((t) => t.status)).toEqual(['failed']);
+  }, 60_000);
+
+  it('records a cancelled run as cancelled', async () => {
+    setMode({ codex: 'hang' });
+    const before = new Set((await guiTasks()).map((t) => t.id));
+    await api('/api/dry-run', req({ recordHistory: true }));
+    expect((await api('/api/run', { ...req({ recordHistory: true }), confirm: true })).status).toBe(202);
+    for (let i = 0; i < 100; i += 1) {
+      const s = (await (await api('/api/run')).json()) as Snap;
+      if (s.steps.find((x) => x.id === 'review')?.status === 'running') break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    await api('/api/run/cancel', {});
+    expect((await settle()).status).toBe('cancelled');
+    const fresh = (await guiTasks()).filter((t) => !before.has(t.id));
+    expect(fresh.map((t) => t.status)).toEqual(['cancelled']);
   }, 60_000);
 });
 

@@ -118,7 +118,7 @@ export function runStepsFor(workflow: WorkflowName, argv: readonly string[], ver
   ];
 }
 
-/** Turns a validated request into a dry-run argument vector. `--dry-run` is always present; no confirm flag can ever be produced. */
+/** Turns a validated request into a dry-run argument vector. `--dry-run` and `--no-record` are always present (a dry run never records); no confirm flag can ever be produced. */
 export function buildDryRunArgv(input: unknown): Built {
   const body = obj(input);
   if (body === undefined) return { error: 'request must be a JSON object' };
@@ -219,9 +219,10 @@ const PREVIEW_TTL_MS = 10 * 60 * 1000;
 const MAX_DIRS = 300;
 
 /** The real-run argument vector for a previewed plan-review: the same arguments, confirmed instead of dry-run. */
-export function toRunArgv(dryArgv: readonly string[], confirmVerify = false, unsandboxed = false): string[] {
+export function toRunArgv(dryArgv: readonly string[], confirmVerify = false, unsandboxed = false, record = false): string[] {
   const write = dryArgv.includes('--workspace');
-  const argv = dryArgv.map((a) => (a === '--dry-run' ? (write ? '--confirm-write' : '--confirm') : a));
+  // A dry run never records; a real run keeps `--no-record` unless the user opted in to task history.
+  const argv = dryArgv.filter((a) => !(record && a === '--no-record')).map((a) => (a === '--dry-run' ? (write ? '--confirm-write' : '--confirm') : a));
   return write && confirmVerify && argv.includes('--verify-command') ? [...argv, '--confirm-verify', ...(unsandboxed ? ['--verify-unsandboxed'] : [])] : argv;
 }
 
@@ -322,7 +323,7 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
       const perStep = (typeof timeoutSec === 'number' ? timeoutSec : 600) * 1000;
       const steps = runStepsFor(workflow, built.argv, verify);
       const timed = steps.filter((st) => st.provider !== 'local').length + (verify ? 1 : 0);
-      manager.start(toRunArgv(built.argv, verify, b['confirmUnsandboxed'] === true), steps, options.watchdogMs ?? perStep * timed + 60_000, write ? () => probe.report(where, before) : undefined);
+      manager.start(toRunArgv(built.argv, verify, b['confirmUnsandboxed'] === true, b['recordHistory'] === true), steps, options.watchdogMs ?? perStep * timed + 60_000, write ? () => probe.report(where, before) : undefined);
       return json(res, 202, manager.snapshot());
     });
   }

@@ -25,7 +25,7 @@ const PN={claude:'Claude',codex:'Codex',local:'Yerel'};
 const PROFILES={plan:['read-only','text-only'],implement:['workspace-write'],review:['read-only','text-only']};
 const PFN={'read-only':'Salt okunur','text-only':'Araçsız (yalnız Claude)','workspace-write':'İzole ağaca yazma'};
 const provOf=(id)=>{const st=S.steps[id];return st.provider?st.provider:STEPS[id].provider(S.workflow)};
-const S={claude:null,claudeMsg:'',cwd:'',timeout:300,previewKey:null,run:null,runLines:[],runCursor:0,timer:null,tick:null,view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
+const S={record:false,claude:null,claudeMsg:'',cwd:'',timeout:300,previewKey:null,run:null,runLines:[],runCursor:0,timer:null,tick:null,view:'run',workflow:'plan-review',routing:'guided',policy:'balanced',accept:false,steps:{plan:{},implement:{},review:{}},status:null,result:null,busy:false,loading:true};
 const modelsOf=(p)=>{const g=(S.status&&S.status.models||[]).find((x)=>x.provider===p);return g?g.models:[]};
 const effortsFor=(p,id)=>{const ms=modelsOf(p);const m=ms.find((x)=>x.id===id);if(m)return m.efforts;const all=[];for(const x of ms)for(const e of x.efforts)if(!all.includes(e))all.push(e);return all};
 function toast(t){const e=h('div',{class:'toast',role:'alert'},t);document.body.append(e);setTimeout(()=>e.remove(),5000)}
@@ -84,6 +84,7 @@ function buildRun(){
   h('label',{class:'l',for:'wtrepo'},'Depo yolu'),R.wtRepo,h('button',{type:'button',class:'chipbtn',onclick:()=>{worktree(false)}},'Planı göster'),R.wtOut);
  R.inBox=h('div',{});
  R.wi=h('input',{type:'checkbox',id:'wi',onchange:()=>{S.result=null;drawRunBtn()}});
+ R.rec=h('input',{type:'checkbox',id:'rec',onchange:()=>{S.record=R.rec.checked}});
  R.acc=h('input',{type:'checkbox',id:'acc',onchange:()=>{S.accept=R.acc.checked;drawRunBtn()}});
  R.go=h('button',{class:'go',type:'button',onclick:preview},IC('play'),h('span',{},'Önizle (dry run)'));
  R.out=h('div',{class:'stack'});R.runOut=h('div',{class:'stack'});
@@ -110,6 +111,7 @@ function buildRun(){
    R.dBox,R.wsBox,R.cwdBox,R.tmoBox,
    h('section',{class:'card lockable'},h('label',{class:'switch',for:'wi'},R.wi,h('span',{},'Proje talimatlarını (CLAUDE.md / AGENTS.md) sınırlı ve güvenilmeyen veri olarak modele aktar. Kişisel dosyalar ve sır benzeri satırlar aktarılmaz; sağlayıcının zaten okuduğu dosya tekrarlanmaz.'))),
    h('section',{class:'card lockable'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul et ',h('code',{},'--accept-unverified'),'. Önizlemeye, gerçek çalıştırmayı ayrıca onaylarsanız ona da aktarılır. Proxy veya ön kontrol reddi kendiliğinden atlanmaz; bu bayrak yalnızca sizin açık tercihinizdir.'))),
+   h('section',{class:'card lockable'},h('label',{class:'switch',for:'rec'},R.rec,h('span',{},'Görev geçmişine kaydet. Yalnızca gerçek çalıştırmada, yerelde; istem, model çıktısı ve plan metni saklanmaz. Kapalıysa ',h('code',{},'--no-record'),' korunur; önizleme hiçbir zaman kaydetmez.'))),
    R.go,R.runBtn,R.runNote)));
  main.append(R.view)}
 function drawControls(){
@@ -172,7 +174,7 @@ function stepCard(s,i){
  return card}
 function row(k,v,why){return h('div',{class:'row'},h('span',{class:'k'},k),h('div',{class:'v'},v,why?h('p',{class:'why'},'CLI gerekçesi: '+why):null))}
 function bodyNow(){const models={},efforts={},providers={},profiles={};for(const id of FLOWS[S.workflow]){const st=S.steps[id];if(st.provider)providers[id]=st.provider;if(st.profile&&!(st.profile==='text-only'&&provOf(id)==='codex'))profiles[id]=st.profile;if(st.model)models[id]=st.model;if(st.effort)efforts[id]=st.effort}
- const b={withInstructions:R.wi.checked,workflow:S.workflow,task:R.task.value,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,steps:{providers,models,efforts,profiles},workspace:R.ws.value.trim(),verify:R.verify.value.trim(),timeoutSec:S.timeout};
+ const b={withInstructions:R.wi.checked,workflow:S.workflow,task:R.task.value,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,recordHistory:S.record,steps:{providers,models,efforts,profiles},workspace:R.ws.value.trim(),verify:R.verify.value.trim(),timeoutSec:S.timeout};
  if(S.workflow==='plan-review')b.cwd=R.cwd.value.trim();return b}
 const paramsKey=()=>JSON.stringify(bodyNow());
 const runActive=()=>!!S.run&&(S.run.status==='running'||S.run.status==='cancelling');
@@ -257,7 +259,7 @@ function confirmRun(){if(!S.result)return;const v=S.result.view;const dlg=h('dia
   :[['Proje dizini',R.cwd.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['İnceleme ('+pv('review')+')',stp('review')]];
  dlg.append(...[h('h2',{id:'dlgt'},IC('alert'),'Gerçek çalıştırmayı onayla'),
   h('div',{class:'facts'},...facts.map((f)=>h('div',{},h('span',{class:'k'},f[0]),h('code',{},f[1]))),
-   h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q)),S.accept?h('div',{},h('span',{class:'k'},'Doğrulanamayan ayarlar'),h('code',{},'KABUL EDİLDİ (--accept-unverified) — gerçek koşuya aktarılır')):null),
+   h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q)),h('div',{},h('span',{class:'k'},'Görev geçmişi'),h('code',{},S.record?'KAYDEDİLİR (yerel, metinsiz)':'kaydedilmez (--no-record)')),S.accept?h('div',{},h('span',{class:'k'},'Doğrulanamayan ayarlar'),h('code',{},'KABUL EDİLDİ (--accept-unverified) — gerçek koşuya aktarılır')):null),
   h('p',{class:'why'},pw?'Seçtiğiniz sağlayıcıların gerçek oturumları başlar ve abonelik kotanızı kullanır. '+pv('implement')+' yalnızca seçtiğiniz bağlı çalışma ağacına yazar; ana ağaç, commit, push, dal değişikliği ve korumalı yollar yasaktır ve her adımdan sonra Git ile denetlenir. İptal ederseniz o ana kadar yazılanlar geri alınmaz. API anahtarı, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.':'Seçtiğiniz sağlayıcıların gerçek oturumları başlar ve abonelik kotanızı kullanır. Plan ('+pv('plan')+') ve inceleme ('+pv('review')+') yazma yetkisi olmadan çalışır; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
   h('label',{class:'switch',for:'c1'},c1,h('span',{},pw?pv('implement')+'’in bu çalışma ağacına dosya yazmasını açıkça onaylıyorum.':'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
   c3?h('label',{class:'switch',for:'c3'},c3,h('span',{},'“'+vcmd+'” komutunun yeni yazılan kodu çalıştırmasını ayrıca onaylıyorum. Komut, bu bilgisayarda doğrulanabilen bir işletim sistemi sandbox’ı içinde (yalnızca çalışma ağacına yazma, ağ yok, kimlik bilgisi klasörleri okunamaz) çalışır; sandbox kanıtlanamazsa çalıştırılmaz.')):null,

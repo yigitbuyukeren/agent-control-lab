@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { writeClaudeCache } from '@agent-control-lab/core';
-import { buildDryRunArgv, chosenProviders, createGuiServer, fileClaudeIntegration, listenGui } from './gui.ts';
+import { buildDryRunArgv, chosenProviders, toRunArgv, createGuiServer, fileClaudeIntegration, listenGui } from './gui.ts';
 import { parseGuiArgs } from './gui-command.ts';
 import type { WorkspaceProbe, WorkspaceReport, WorkspaceState } from './gui-workspace.ts';
 
@@ -150,6 +150,17 @@ describe('gui server', () => {
     if ('error' in on || 'error' in off) throw new Error('unexpected');
     expect(on.argv).toContain('--accept-unverified');
     expect(off.argv).not.toContain('--accept-unverified');
+  });
+  it('never drops --no-record from a preview, and a real run keeps it unless history was opted in', () => {
+    const built = buildDryRunArgv({ ...good, recordHistory: true });
+    if ('error' in built) throw new Error('unexpected');
+    expect(built.argv).toContain('--no-record');
+    expect(toRunArgv(built.argv)).toContain('--no-record');
+    expect(toRunArgv(built.argv, false, false, false)).toContain('--no-record');
+    const recorded = toRunArgv(built.argv, false, false, true);
+    expect(recorded).not.toContain('--no-record');
+    expect(recorded).toContain('--confirm');
+    expect(recorded).not.toContain('--dry-run');
   });
   it('listens on loopback only', async () => {
     const { port } = await start();

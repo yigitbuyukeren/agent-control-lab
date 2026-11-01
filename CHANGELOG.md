@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1 — 2026-11-01
+
+### Fixed
+- GUI real runs were never added to task history: the preview's `--no-record` was carried into the real run. A preview still never records; the real run now records (task/handoff and result) only when the new GUI option "Görev geçmişine kaydet" is on, and keeps `--no-record` when it is off (the default). The confirmation dialog shows the choice.
+- Tests cover completed, failed and cancelled GUI runs (and crash visibility), `tasks`, `tasks resume-check` and the GUI history list.
+
+Server confirmations, preview matching and the privacy policy (no prompt, model output or plan text stored) are unchanged.
+
 ## 1.0.0 — 2026-11-01
 
 First stable release: the experimental CLI/GUI became a product other developers can install and use daily.

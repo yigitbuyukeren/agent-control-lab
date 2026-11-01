@@ -1,7 +1,7 @@
 import { createServer } from 'node:net';
 import { access, constants, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { join, posix } from 'node:path';
 import { runProcess, type ProcessRunner } from './process-runner.ts';
 
 /**
@@ -86,8 +86,8 @@ export async function detectSandbox(deps: DetectDeps = {}): Promise<SandboxStatu
     return (await exists('/usr/bin/sandbox-exec')) ? { available: true, provider: macSandbox } : { available: false, reason: 'sandbox-exec was not found' };
   }
   if (platform === 'linux') {
-    for (const dir of (deps.pathEnv ?? process.env['PATH'] ?? '').split(delimiter).filter((d) => d !== '')) {
-      if (await exists(join(dir, 'bwrap'))) return { available: true, provider: bwrapSandbox };
+    for (const dir of (deps.pathEnv ?? process.env['PATH'] ?? '').split(':').filter((d) => d !== '')) {
+      if (await exists(posix.join(dir, 'bwrap'))) return { available: true, provider: bwrapSandbox };
     }
     return { available: false, reason: 'bubblewrap (bwrap) is not installed' };
   }

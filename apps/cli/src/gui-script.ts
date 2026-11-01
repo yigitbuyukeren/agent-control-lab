@@ -47,7 +47,7 @@ const TITLES={run:'Orkestrasyon',prep:'Hazırlık ve görev geçmişi',providers
 const app=$('#app');
 const nav=h('nav',{class:'nav','aria-label':'Ana gezinme'},h('div',{class:'brand'},h('div',{class:'logo'},IC('spark')),'Agent Control Lab'),
  NAV.map(([id,ic,t])=>h('button',{class:'navbtn','data-view':id,onclick:()=>go(id)},IC(ic),t)),
- h('div',{class:'navfoot'},IC('lock'),'v0.2 · yerel'));
+ h('div',{class:'navfoot'},IC('lock'),'v1.0 · yerel'));
 const topTitle=h('h1',{});const topPills=h('div',{style:null,class:'toppills'});
 const refreshBtn=h('button',{class:'iconbtn',title:'Durumu yenile','aria-label':'Durumu yenile',onclick:()=>loadStatus()},IC('refresh'));
 const topbar=h('header',{class:'top'},topTitle,h('span',{class:'pill safe'},IC('shield'),'Yerel · onaylı çalıştırma'),topPills,refreshBtn);

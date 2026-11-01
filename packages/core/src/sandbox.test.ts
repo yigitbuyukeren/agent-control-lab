@@ -44,7 +44,7 @@ describe('sandbox wrapping', () => {
     expect(w.args.join(' ')).toContain('--tmpfs /h/.ssh');
   });
   it('lists the credential locations it protects', () => {
-    expect(defaultProtectedPaths('/home/u')).toEqual(expect.arrayContaining(['/home/u/.ssh', '/home/u/.aws', '/home/u/.claude']));
+    expect(defaultProtectedPaths('/home/u')).toEqual(expect.arrayContaining([join('/home/u', '.ssh'), join('/home/u', '.aws'), join('/home/u', '.claude')]));
   });
 });
 

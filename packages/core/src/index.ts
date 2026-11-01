@@ -11,7 +11,7 @@ export function getInfo(env: { node: string; platform: string }): LabInfo {
   return { name: 'agent-control-lab', version: VERSION, ...env };
 }
 
-export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'outcomes' | 'run' | 'orchestrate' | 'workspaces' | 'instructions' | 'tasks' | 'worktree'> {
+export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'outcomes' | 'run' | 'orchestrate' | 'workspaces' | 'instructions' | 'tasks' | 'worktree' | 'doctor'> {
   const [first] = argv;
   if (first === undefined || first === 'help' || first === '--help' || first === '-h') {
     return ok('help');
@@ -31,6 +31,7 @@ export function parseCommand(argv: readonly string[]): Result<'help' | 'version'
   if (first === 'instructions') return ok('instructions');
   if (first === 'tasks') return ok('tasks');
   if (first === 'worktree') return ok('worktree');
+  if (first === 'doctor') return ok('doctor');
   return err(`unknown command: ${first}`);
 }
 

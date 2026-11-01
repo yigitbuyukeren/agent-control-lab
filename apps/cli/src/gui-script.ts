@@ -17,7 +17,7 @@ const POLICY_HINT={economy:'Mümkün olan en düşük efor ve verimli modeller.'
 const FLOWS={'plan-review':['plan','review'],'plan-implement-review':['plan','implement','review']};
 const STEPS={
  plan:{tr:'Plan',icon:'layers',d:'Görevi adımlara böler. Her iki sağlayıcı da izin profiline göre çalışır.',provider:()=> 'claude'},
- implement:{tr:'Uygulama',icon:'term',d:'Yalnızca izole çalışma ağacına yazar.',provider:()=> 'codex'},
+ implement:{tr:'Uygulama',icon:'term',d:'Seçili sağlayıcı (Claude veya Codex) yalnızca izole çalışma ağacına yazar.',provider:()=> 'codex'},
  inspect:{tr:'Denetim',icon:'shield',d:'',provider:()=> 'local'},
  verify:{tr:'Test komutu',icon:'term',d:'',provider:()=> 'local'},
  review:{tr:'İnceleme',icon:'shield',d:'Çıktıyı bağımsız olarak gözden geçirir.',provider:(w)=>w==='plan-review'?'codex':'claude'}};
@@ -42,8 +42,8 @@ const UNC={low:'Düşük',medium:'Orta',high:'Yüksek'};
 const EVK=[['benchmark','Kıyaslama kanıtı'],['documentation','Dokümantasyon (ölçüm değil)'],['catalog','Kanıt kataloğu'],['access','Erişim'],['other','Diğer']];
 
 /* ---------- shell ---------- */
-const NAV=[['run','flow','Orkestrasyon'],['providers','cpu','Sağlayıcılar'],['safety','lock','Güvenlik']];
-const TITLES={run:'Orkestrasyon',providers:'Sağlayıcılar ve kota',safety:'Güvenlik ve sınırlar'};
+const NAV=[['run','flow','Orkestrasyon'],['providers','cpu','Sağlayıcılar'],['prep','shield','Hazırlık'],['safety','lock','Güvenlik']];
+const TITLES={run:'Orkestrasyon',prep:'Hazırlık ve görev geçmişi',providers:'Sağlayıcılar ve kota',safety:'Güvenlik ve sınırlar'};
 const app=$('#app');
 const nav=h('nav',{class:'nav','aria-label':'Ana gezinme'},h('div',{class:'brand'},h('div',{class:'logo'},IC('spark')),'Agent Control Lab'),
  NAV.map(([id,ic,t])=>h('button',{class:'navbtn','data-view':id,onclick:()=>go(id)},IC(ic),t)),
@@ -76,9 +76,13 @@ function buildRun(){
  R.ws=h('input',{type:'text',id:'ws',autocomplete:'off',placeholder:'/yol/izole-calisma-agaci',oninput:()=>{drawRunBtn()}});
  R.wsPicker=h('div',{class:'picker',hidden:true});
  R.verify=h('input',{type:'text',id:'vc',autocomplete:'off',placeholder:'pnpm test',oninput:()=>{drawRunBtn()}});
- R.wsBox=h('div',{class:'card lockable'},h('h2',{},IC('doc'),'Çalışma ağacı'),h('p',{class:'hint'},'Var olan, bağlı bir Git çalışma ağacı (ana ağaç olmaz, temiz olmalı). Codex yalnızca burada yazar; önizlemede hiçbir şey yazılmaz.'),
+ R.wsBox=h('div',{class:'card lockable'},h('h2',{},IC('doc'),'Çalışma ağacı'),h('p',{class:'hint'},'Var olan, bağlı bir Git çalışma ağacı (ana ağaç olmaz, temiz olmalı). Seçtiğiniz uygulama sağlayıcısı (Claude veya Codex) yalnızca burada yazar; önizlemede hiçbir şey yazılmaz.'),
   h('label',{class:'l',for:'ws'},'Yol'),h('div',{class:'pathrow'},R.ws,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.ws.value.trim(),R.ws)}},'Gözat')),R.wsPicker,h('div',{class:'sp'}),h('label',{class:'l',for:'vc'},'Test komutu (isteğe bağlı)'),R.verify,
-  h('p',{class:'hint'},'Yeni yazılan kodu model korumasının dışında çalıştırır; yalnızca ayrı bir onayla çalışır. Önizlemede çalıştırılmaz.'));
+  R.wtBox,h('p',{class:'hint'},'Yeni yazılan kodu çalıştırır; yalnızca ayrı bir onayla ve kanıtlanmış bir işletim sistemi sandbox’ı içinde çalışır. Önizlemede çalıştırılmaz ve sandbox durumu önizlemede gösterilir.'));
+ R.wtRepo=h('input',{type:'text',id:'wtrepo',autocomplete:'off',placeholder:'/yol/ana-depo'});R.wtOut=h('div',{class:'stack'});
+ R.wtBox=h('div',{},h('div',{class:'sp'}),h('h4',{},'Yeni çalışma ağacı (isteğe bağlı)'),h('p',{class:'hint'},'Ana depoya dokunmadan, ayrı bir acl/ dalında, depo dışında bağlı bir çalışma ağacı oluşturur. Önce plan gösterilir; oluşturma ayrıca onay ister. Otomatik silme yoktur.'),
+  h('label',{class:'l',for:'wtrepo'},'Depo yolu'),R.wtRepo,h('button',{type:'button',class:'chipbtn',onclick:()=>{worktree(false)}},'Planı göster'),R.wtOut);
+ R.inBox=h('div',{});
  R.acc=h('input',{type:'checkbox',id:'acc',onchange:()=>{S.accept=R.acc.checked;drawRunBtn()}});
  R.go=h('button',{class:'go',type:'button',onclick:preview},IC('play'),h('span',{},'Önizle (dry run)'));
  R.out=h('div',{class:'stack'});R.runOut=h('div',{class:'stack'});
@@ -86,7 +90,7 @@ function buildRun(){
  R.picker=h('div',{class:'picker',hidden:true});
  R.tsel=h('select',{id:'tmo','aria-label':'Adım başına zaman aşımı',onchange:()=>{S.timeout=Number(R.tsel.value);drawRunBtn()}},[[120,'2 dakika'],[300,'5 dakika'],[600,'10 dakika'],[900,'15 dakika']].map(([v,t])=>h('option',{value:v},t)));R.tsel.value=String(S.timeout);
  R.cwdBox=h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Proje dizini'),h('p',{class:'hint'},'Claude ve Codex bu dizinde çalışır (araçsız plan, salt okunur inceleme). Gerçek çalıştırma için seçilmesi zorunludur.'),
-  h('label',{class:'l',for:'cwd'},'Yol'),h('div',{class:'pathrow'},R.cwd,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.cwd.value.trim(),R.cwd)}},'Gözat')),R.picker);
+  h('label',{class:'l',for:'cwd'},'Yol'),h('div',{class:'pathrow'},R.cwd,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.cwd.value.trim(),R.cwd)}},'Gözat')),R.picker,R.inBox,h('button',{type:'button',class:'chipbtn',onclick:showInstructions},'Talimat dosyalarını göster'));
  R.dRoot=h('input',{type:'text',id:'droot',autocomplete:'off',placeholder:'/yol/kök-dizin'});R.dPicker=h('div',{class:'picker',hidden:true});R.dOut=h('div',{class:'stack'});
  R.dBox=h('section',{class:'card lockable'},h('h2',{},IC('doc'),'Proje keşfi'),h('p',{class:'hint'},'Seçtiğiniz kök altında repo, monorepo paketi ve Git dışı projeleri salt okunur listeler. Symlink’ler izlenmez, gizli dosyalar okunmaz. Görev metni yalnızca öneri üretir; seçimi siz yaparsınız.'),
   h('label',{class:'l',for:'droot'},'Kök dizin'),h('div',{class:'pathrow'},R.dRoot,h('button',{type:'button',class:'chipbtn',onclick:()=>{browse(R.dRoot.value.trim(),R.dRoot)}},'Gözat')),R.dPicker,h('div',{class:'sp'}),
@@ -234,7 +238,7 @@ async function poll(){clearTimeout(S.timer);
  try{const r=await api('/api/run?from='+S.runCursor);if(r.status==='idle')S.run=null;else{S.runCursor=r.next;if(r.skipped)S.runLines.push('… '+r.skipped+' satır kayıt sınırı nedeniyle atlandı');S.runLines.push(...r.lines);if(S.runLines.length>400)S.runLines.splice(0,S.runLines.length-400);S.run=r}}catch(e){toast(String(e.message||e))}
  drawRun();
  if(runActive())S.timer=setTimeout(poll,700);else{clearInterval(S.tick);loadStatus()}}
-async function startRun(acceptConfirmed,writeConfirmed,verifyConfirmed){const b=bodyNow();b.confirm=true;if(S.accept)b.confirmAcceptUnverified=acceptConfirmed===true;if(S.workflow==='plan-implement-review'){b.confirmWrite=writeConfirmed===true;if(b.verify)b.confirmVerify=verifyConfirmed===true}
+async function startRun(acceptConfirmed,writeConfirmed,verifyConfirmed,unsandboxed){const b=bodyNow();b.confirm=true;if(S.accept)b.confirmAcceptUnverified=acceptConfirmed===true;if(S.workflow==='plan-implement-review'){b.confirmWrite=writeConfirmed===true;if(b.verify){b.confirmVerify=verifyConfirmed===true;if(unsandboxed===true)b.confirmUnsandboxed=true}}
  S.previewKey=null;
  try{S.run=await api('/api/run',{method:'POST',body:JSON.stringify(b)});S.runLines=[];S.runCursor=S.run.next||0;S.runLines.push(...(S.run.lines||[]));drawRun();startTick();S.timer=setTimeout(poll,500);R.runOut.scrollIntoView({behavior:'smooth',block:'nearest'})}
  catch(e){toast(String(e.message||e))}}
@@ -243,21 +247,42 @@ function confirmRun(){if(!S.result)return;const v=S.result.view;const dlg=h('dia
  const pw=S.workflow==='plan-implement-review',vcmd=pw?R.verify.value.trim():'';
  const stp=(id)=>{const s=v.steps.find((x)=>x.id===id);return s?(s.model?s.model.value:'?')+' · efor: '+(s.effort?s.effort.value:'?'):'?'};
  const q=((S.status&&S.status.quota)||[]).map((x)=>PN[x.provider]+': '+x.windows.map((w)=>winName(w.label)+' %'+Math.round(w.usedPercent)).join(', ')).join(' | ')||'okunamadı (tahmin gösterilmez)';
- const c1=h('input',{type:'checkbox',id:'c1'}),c2=S.accept?h('input',{type:'checkbox',id:'c2'}):null,c3=vcmd?h('input',{type:'checkbox',id:'c3'}):null;
- const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();startRun(!!c2&&c2.checked,c1.checked,!!c3&&c3.checked)}},IC('play'),h('span',{},'Gerçek çalıştırmayı başlat'));
+ const c1=h('input',{type:'checkbox',id:'c1'}),c2=S.accept?h('input',{type:'checkbox',id:'c2'}):null,c3=vcmd?h('input',{type:'checkbox',id:'c3'}):null,c4=vcmd?h('input',{type:'checkbox',id:'c4'}):null;
+ const go=h('button',{class:'go',type:'button',disabled:true,onclick:()=>{dlg.close();startRun(!!c2&&c2.checked,c1.checked,!!c3&&c3.checked,!!c4&&c4.checked)}},IC('play'),h('span',{},'Gerçek çalıştırmayı başlat'));
  const upd=()=>{go.disabled=!(c1.checked&&(!c2||c2.checked)&&(!c3||c3.checked))};for(const c of [c1,c2,c3])if(c)c.addEventListener('change',upd);
  const pv=(id)=>{const s=v.steps.find((x)=>x.id===id);return s?PN[s.provider]||s.provider:'?'};
- const facts=pw?[['Çalışma ağacı',R.ws.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['Uygulama (Codex, YAZAR)',stp('implement')],['İnceleme ('+pv('review')+')',stp('review')],['Test komutu',vcmd||'yok']]
+ const facts=pw?[['Çalışma ağacı',R.ws.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['Uygulama ('+pv('implement')+', YAZAR)',stp('implement')],['İnceleme ('+pv('review')+')',stp('review')],['Test komutu',vcmd||'yok']]
   :[['Proje dizini',R.cwd.value.trim()],['Plan ('+pv('plan')+')',stp('plan')],['İnceleme ('+pv('review')+')',stp('review')]];
  dlg.append(...[h('h2',{id:'dlgt'},IC('alert'),'Gerçek çalıştırmayı onayla'),
   h('div',{class:'facts'},...facts.map((f)=>h('div',{},h('span',{class:'k'},f[0]),h('code',{},f[1]))),
    h('div',{},h('span',{class:'k'},'Zaman aşımı'),h('code',{},(S.timeout/60)+' dk / adım')),h('div',{},h('span',{class:'k'},'Kota'),h('code',{},q)),S.accept?h('div',{},h('span',{class:'k'},'Doğrulanamayan ayarlar'),h('code',{},'KABUL EDİLDİ (--accept-unverified) — gerçek koşuya aktarılır')):null),
-  h('p',{class:'why'},pw?'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Codex yalnızca seçtiğiniz bağlı çalışma ağacına yazar; ana ağaç, commit, push, dal değişikliği ve korumalı yollar yasaktır ve her adımdan sonra Git ile denetlenir. İptal ederseniz o ana kadar yazılanlar geri alınmaz. API anahtarı, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.':'Gerçek Claude ve Codex oturumları başlar ve abonelik kotanızı kullanır. Claude araçsız planlar, Codex salt okunur inceler; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
-  h('label',{class:'switch',for:'c1'},c1,h('span',{},pw?'Codex’in bu çalışma ağacına dosya yazmasını açıkça onaylıyorum.':'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
-  c3?h('label',{class:'switch',for:'c3'},c3,h('span',{},'“'+vcmd+'” komutunun yeni yazılan kodu model korumasının dışında çalıştırmasını ayrıca onaylıyorum.')):null,
+  h('p',{class:'why'},pw?'Seçtiğiniz sağlayıcıların gerçek oturumları başlar ve abonelik kotanızı kullanır. '+pv('implement')+' yalnızca seçtiğiniz bağlı çalışma ağacına yazar; ana ağaç, commit, push, dal değişikliği ve korumalı yollar yasaktır ve her adımdan sonra Git ile denetlenir. İptal ederseniz o ana kadar yazılanlar geri alınmaz. API anahtarı, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.':'Seçtiğiniz sağlayıcıların gerçek oturumları başlar ve abonelik kotanızı kullanır. Plan ('+pv('plan')+') ve inceleme ('+pv('review')+') yazma yetkisi olmadan çalışır; dosya yazılmaz, commit/push yapılmaz, API anahtarı kullanılmaz, yeniden deneme ve sağlayıcı değiştirme yoktur. Kota %95’e yakınsa koşu başlamaz.'),
+  h('label',{class:'switch',for:'c1'},c1,h('span',{},pw?pv('implement')+'’in bu çalışma ağacına dosya yazmasını açıkça onaylıyorum.':'Bunu anlıyorum ve gerçek çalıştırmayı onaylıyorum.')),
+  c3?h('label',{class:'switch',for:'c3'},c3,h('span',{},'“'+vcmd+'” komutunun yeni yazılan kodu çalıştırmasını ayrıca onaylıyorum. Komut, bu bilgisayarda doğrulanabilen bir işletim sistemi sandbox’ı içinde (yalnızca çalışma ağacına yazma, ağ yok, kimlik bilgisi klasörleri okunamaz) çalışır; sandbox kanıtlanamazsa çalıştırılmaz.')):null,
+  c4?h('label',{class:'switch',for:'c4'},c4,h('span',{},'İsteğe bağlı: sandbox kullanma. Komut tam kullanıcı haklarınızla, korumasız çalışsın (işaretlemezseniz sandbox kanıtlanamadığında komut çalıştırılmaz).')):null,
   c2?h('label',{class:'switch',for:'c2'},c2,h('span',{},'Doğrulanamayan ayarları (örn. proxy/TLS değişkenlerinin Claude’a iletilmemesi) gerçek çalıştırma için de kendim kabul ediyorum: --accept-unverified bu koşuya aktarılacak ve o ön kontrol uyarıları aşılacak.')):null,
   h('div',{class:'dlgbtn'},h('button',{type:'button',class:'chipbtn',onclick:()=>{dlg.close()}},'Vazgeç'),go)].filter((x)=>x!==null));
  document.body.append(dlg);dlg.addEventListener('close',()=>{dlg.remove()});dlg.showModal()}
+async function worktree(confirmed){const repo=R.wtRepo.value.trim();if(repo===''){toast('Önce depo yolunu yazın.');return}
+ try{const r=await api('/api/worktree',{method:'POST',body:JSON.stringify({repo,confirm:confirmed===true})});
+  const out=[h('pre',{class:'log'},(r.output||'')+(r.errors||''))];
+  if(r.created&&r.workspace){R.ws.value=r.workspace;S.result=null;drawRunBtn();out.push(h('p',{class:'why'},'Oluşturuldu ve çalışma ağacı yolu forma yazıldı.'))}
+  else if(r.exitCode===0&&!confirmed){const ok=h('input',{type:'checkbox',id:'wtok'});const b=h('button',{type:'button',class:'chipbtn',disabled:true,onclick:()=>{worktree(true)}},'Oluştur');ok.addEventListener('change',()=>{b.disabled=!ok.checked});out.push(h('label',{class:'switch',for:'wtok'},ok,h('span',{},'Bu çalışma ağacının ve dalın oluşturulmasını onaylıyorum.')),b)}
+  R.wtOut.replaceChildren(...out)}catch(e){toast(String(e.message||e))}}
+const LSTAT={loaded:'okunur',unknown:'okunduğu doğrulanamaz','on-demand':'alt klasörde gerektiğinde',shadowed:'üstü örtülü','not-loaded':'okunmaz',skipped:'atlandı'};
+async function showInstructions(){const dir=(S.workflow==='plan-implement-review'?R.ws:R.cwd).value.trim();if(dir===''){toast('Önce bir dizin seçin.');return}
+ try{const r=await api('/api/instructions',{method:'POST',body:JSON.stringify({cwd:dir})});const out=[h('p',{class:'why'},'Yalnızca listelenir; dosyalar değiştirilmez. Talimat metni güvenilmeyen veridir ve izinleri veya onayları asla aşmaz. Kişisel (kullanıcı/yerel) dosyalar dışarı aktarılmaz.')];
+  for(const g of [r.claude,r.codex]){if(!g)continue;out.push(h('h4',{},PN[g.provider]+': '+(g.entries.length?g.entries.length+' dosya':'talimat dosyası yok')));
+   out.push(h('ul',{class:'list'},g.entries.map((e)=>h('li',{},h('code',{},e.path),' ',h('span',{class:'chip def'},(LSTAT[e.status]||e.status)+' · '+e.scope),e.flags.length?h('span',{class:'chip bad'},'şüpheli metin'):null,h('div',{class:'why'},e.reason)))));
+   for(const c of g.conflicts)out.push(h('p',{class:'note'},c.detail));for(const w of g.warnings)out.push(h('p',{class:'note'},w))}
+  for(const c of r.crossProviderConflicts||[])out.push(h('p',{class:'note'},c.detail));
+  R.inBox.replaceChildren(...out)}catch(e){toast(String(e.message||e))}}
+const CKIND={ok:'ok',warn:'warn',fail:'bad'};
+async function drawPrep(){const v=h('div',{class:'stack'});main.replaceChildren(v);
+ v.append(h('section',{class:'card'},h('h2',{},IC('shield'),'Kurulum denetimi'),h('p',{class:'hint'},'Salt okunur: model çağrılmaz, hiçbir şey değiştirilmez.'),h('div',{id:'doc'},h('span',{class:'skel',style:null}))));
+ v.append(h('section',{class:'card'},h('h2',{},IC('doc'),'Görev geçmişi'),h('p',{class:'hint'},'Yerelde kalır. İstem, model çıktısı ve plan metni saklanmaz; yalnızca durum, Git bilgisi ve kanıt özeti. Silmek için: agent-control-lab tasks clear'),h('div',{id:'tl'},h('span',{class:'skel',style:null}))));
+ try{const d=await api('/api/doctor');const box=document.getElementById('doc');if(box)box.replaceChildren(...d.items.map((c)=>h('div',{class:'srow'},h('span',{class:'dot '+(CKIND[c.status]||'warn')}),h('div',{},h('div',{},c.message),c.fix?h('div',{class:'why'},'→ '+c.fix):null))))}catch(e){toast(String(e.message||e))}
+ try{const t=await api('/api/tasks');const box=document.getElementById('tl');if(box){box.replaceChildren(...(t.items.length?t.items.map((x)=>h('div',{class:'srow'},h('span',{class:'dot '+(x.status==='completed'?'ok':x.status==='running'?'warn':'bad')}),h('div',{},h('code',{},x.id||''),' ',x.unreadable?'okunamıyor ('+x.unreadable+')':x.status+(x.ownerGone?' (süreci yok)':'')+' · '+x.label+' · '+x.project+' · '+x.updatedAt))):[h('p',{class:'why'},'Kayıtlı görev yok.')]))}}catch(e){toast(String(e.message||e))}}
 const DKIND={'git-repo':'Git deposu','git-worktree':'Git çalışma ağacı','git-submodule':'Git alt modülü',package:'paket','project':'proje'};
 function pickWorkspace(c){const t=S.workflow==='plan-implement-review'?R.ws:R.cwd;t.value=c.path;S.result=null;drawRunBtn();toast('Seçildi: '+c.relative)}
 function candRow(c,note){return h('div',{class:'row'},h('span',{class:'k'},c.relative),h('div',{class:'v'},h('b',{},c.name),' ',h('span',{class:'badge'},DKIND[c.kind]||c.kind),c.monorepo?h('span',{class:'badge'},'monorepo'):null,c.nestedIn?h('span',{class:'badge'},'iç içe repo'):null,
@@ -362,7 +387,7 @@ function draw(){
  nav.querySelectorAll('.navbtn').forEach((b)=>{if(b.dataset.view===S.view)b.setAttribute('aria-current','page');else b.removeAttribute('aria-current')});
  drawTop();
  if(S.view==='run'){main.replaceChildren(R.view);drawControls();drawFlow();drawResult();drawRun()}
- else if(S.view==='providers')drawProviders();else drawSafety()}
+ else if(S.view==='providers')drawProviders();else if(S.view==='prep')drawPrep();else drawSafety()}
 async function loadStatus(){S.loading=true;refreshBtn.classList.add('spin');draw();
  try{S.status=await api('/api/status')}catch(e){toast('Durum okunamadı: '+String(e.message||e))}
  await loadClaude();

@@ -1,7 +1,7 @@
 import { checkResume, isTaskId, snapshotWorkspace, type LoadedTask, type TaskStore } from '@agent-control-lab/core';
 import { safeText } from './workspaces.ts';
 
-export const TASKS_USAGE = 'usage: agent-control-lab tasks [list] | show <id> | resume-check <id> | forget <id> | clear';
+export const TASKS_USAGE = 'usage: agent-control-lab tasks [list [--json]] | show <id> | resume-check <id> | forget <id> | clear';
 
 interface Io {
   out(t: string): void;
@@ -24,6 +24,11 @@ export async function runTasksCommand(argv: readonly string[], io: Io, store: Ta
   if (rest.length > 0) {
     io.error(`${TASKS_USAGE}\n`);
     return 2;
+  }
+  if (sub === 'list' && id === '--json') {
+    const all = await store.list();
+    io.out(`${JSON.stringify(all.map((t) => (t.ok ? { id: t.packet.taskId, status: t.packet.status, updatedAt: t.packet.updatedAt, label: t.packet.label, project: t.packet.project.name, ownerGone: t.ownerGone } : { id: t.id, unreadable: t.reason })), null, 2)}\n`);
+    return 0;
   }
   if (sub === 'list' && id === undefined) {
     const all = await store.list();

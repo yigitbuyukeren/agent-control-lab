@@ -255,6 +255,12 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
     return origin === undefined || origin === `http://${host}`;
   }
 
+  const runCli = async (argv: readonly string[]): Promise<{ exitCode: number; output: string; errors: string }> => {
+    let output = '';
+    let errors = '';
+    const exitCode = await options.run(argv, { out: (t) => { output += t; }, error: (t) => { errors += t; } });
+    return { exitCode, output, errors };
+  };
   const authed = (req: IncomingMessage): boolean => sameToken(req.headers['x-acl-token'] as string | undefined, token);
   const ask = async (argv: readonly string[]): Promise<string> => {
     let out = '';
@@ -429,6 +435,41 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
         }
         // `runnable` is true only when a real run could follow: the CLI said it would run and, for a write workflow, the worktree state could be read.
         return json(res, 200, { exitCode, output, errors, view, runnable });
+      });
+    }
+    if (req.method === 'GET' && (path === '/api/doctor' || path === '/api/tasks')) {
+      if (manager.active) return json(res, 409, { error: 'a run is active' });
+      return exclusive(async () => {
+        const r = await runCli(path === '/api/doctor' ? ['doctor', '--json'] : ['tasks', 'list', '--json']);
+        try {
+          return json(res, 200, { items: JSON.parse(r.output) as unknown });
+        } catch {
+          return json(res, 200, { items: [], error: 'unavailable' });
+        }
+      });
+    }
+    if (req.method === 'POST' && (path === '/api/instructions' || path === '/api/worktree')) {
+      const body = await readJson(req);
+      if ('error' in body) return json(res, body.status, { error: body.error });
+      const input = obj(body.value);
+      const dir = input?.[path === '/api/worktree' ? 'repo' : 'cwd'];
+      if (typeof dir !== 'string' || !isAbsolute(dir) || dir.length > 1024 || dir.includes('\0')) return json(res, 400, { error: 'absolute path needed' });
+      if (manager.active) return json(res, 409, { error: 'a run is active' });
+      if (path === '/api/instructions') {
+        return exclusive(async () => {
+          const r = await runCli(['instructions', '--cwd', dir, '--json']);
+          try {
+            return json(res, 200, JSON.parse(r.output) as unknown);
+          } catch {
+            return json(res, 400, { error: 'could not read the instructions' });
+          }
+        });
+      }
+      const create = input?.['confirm'] === true;
+      return exclusive(async () => {
+        const r = await runCli(['worktree', 'create', '--repo', dir, ...(create ? ['--confirm'] : [])]);
+        const workspace = /--workspace "([^"]+)"/.exec(r.output)?.[1];
+        return json(res, 200, { exitCode: r.exitCode, output: maskSecrets(r.output, [token]), errors: maskSecrets(r.errors, [token]), created: create && r.exitCode === 0, ...(create && r.exitCode === 0 && workspace !== undefined ? { workspace } : {}) });
       });
     }
     return json(res, 404, { error: 'not found' });

@@ -1,3 +1,4 @@
+import { formatDoctor, runDoctor } from './doctor.ts';
 import { runWorktreeCommand } from './worktree-cmd.ts';
 import { runTasksCommand } from './tasks-cmd.ts';
 import { parseInstructionsArgs, runInstructionsCommand } from './instructions-cmd.ts';
@@ -84,7 +85,8 @@ Commands:
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
   workspaces --root <dir> [--task "<text>"] [--select <relative path | name>] [--json]    (read-only discovery of repos, monorepo packages and projects under a root; a task only suggests, it never chooses)
   instructions --cwd <dir> [--provider claude|codex|both] [--context] [--json]    (read-only: which CLAUDE.md / AGENTS.md files each provider uses, conflicts, and the bounded context that could be passed on)
-  tasks [list] | show <id> | resume-check <id> | forget <id> | clear    (local task history: no prompts or model output; resume-check re-reads Git before anything continues)
+  tasks [list [--json]] | show <id> | resume-check <id> | forget <id> | clear    (local task history: no prompts or model output; resume-check re-reads Git before anything continues)
+  doctor [--json]    (first-run check: Node, Git, Claude/Codex install and sign-in, OS sandbox probe, data directory; read-only, calls no model)
   worktree create --repo <dir> [--confirm] | list | remove <id> --confirm    (linked Git worktree on its own acl/<id> branch outside the repository; plan first, only tool-created worktrees can be removed, never forced)
   orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|review>=auto|<id>] [--step-effort <plan|review>=auto|<level>]
                         Claude drafts a plan, Codex reviews it read-only (plan/review providers are choosable: --step-provider; every step has a permission profile, --step-profile step=read-only|text-only (Claude only); plan/review default to read-only); stops at the first failure (no retry, no fallback)
@@ -701,6 +703,11 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
         return 2;
       }
       return runWorkspacesCommand(args, io);
+    }
+    case 'doctor': {
+      const checks = await runDoctor({ ...(deps.exec === undefined ? {} : { exec: deps.exec }), ...(deps.sandbox === undefined ? {} : { sandbox: deps.sandbox }), cacheDir: deps.cacheDir ?? resolveCacheDir() });
+      io.out(argv.includes('--json') ? `${JSON.stringify(checks, null, 2)}\n` : formatDoctor(checks));
+      return checks.some((c) => c.status === 'fail') ? 1 : 0;
     }
     case 'worktree':
       return runWorktreeCommand(argv.slice(1), io, deps.cacheDir ?? resolveCacheDir(), { ...(deps.runner === undefined ? {} : { runner: deps.runner }) }, deps.now);

@@ -88,10 +88,13 @@ async function go(argv: string[], scenario: Scenario = {}) {
   let out = '';
   let error = '';
   let claudeCalls = 0;
+  // The harness has no OS sandbox of its own (fake runner): verification tests opt in to the explicit unsandboxed mode.
+  const full = argv.includes('--confirm-verify') && !argv.includes('--verify-unsandboxed') ? [...argv, '--verify-unsandboxed'] : argv;
   const code = await run(
-    argv,
+    full,
     { out: (t) => (out += t), error: (t) => (error += t) },
     {
+      sandbox: { mode: 'unavailable', reason: 'test harness' },
       exec,
       appServer: modelServer,
       env: CLEAN_ENV,
@@ -170,7 +173,8 @@ describe('orchestrate plan-implement-review --dry-run', () => {
     expect(r.out).toContain('main worktree:');
     expect(r.out).toContain('implement [codex]: WRITE sandbox limited to the workspace');
     expect(r.out).toContain('inspect [local]');
-    expect(r.out).toContain('RUNS THE NEWLY WRITTEN CODE OUTSIDE ANY MODEL SANDBOX');
+    expect(r.out).toContain('runs the newly written code inside an OS sandbox when one is proven to work here');
+    expect(r.out).toContain('sandbox: NONE (test harness)');
     expect(r.out).toContain('requires: --confirm-write, --confirm-verify');
     expect(r.out).toContain('ignored files too');
     expect(r.out).toContain('review input: tracked diff plus new text files in full');

@@ -9,6 +9,7 @@ import {
   executeWorkflow,
   planImplementReviewSteps,
   prepareWorkspace,
+  resolveSandbox,
   runVerify,
   validateWorkingDir,
   type GitReadDeps,
@@ -91,10 +92,11 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
         '      review input: tracked diff plus new text files in full; a change that does not fit completely is rejected (review-incomplete), never reviewed in part\n' +
         (args.verify === undefined
           ? ''
-          : `  ${n(4)} verify [local]: ${[args.verify.command, ...args.verify.args].join(' ')} (no shell, cleaned environment; RUNS THE NEWLY WRITTEN CODE OUTSIDE ANY MODEL SANDBOX, refused if build/test config files changed, state re-checked afterwards)\n`) +
+          : `  ${n(4)} verify [local]: ${[args.verify.command, ...args.verify.args].join(' ')} (no shell, cleaned environment; runs the newly written code inside an OS sandbox when one is proven to work here (write only to the worktree, no network, credential folders unreadable); otherwise it is NOT run unless --verify-unsandboxed is given; refused if build/test config files changed, state re-checked afterwards)\n`) +
         `  ${n(total)} review [${reviewPf.provider}]: ${readOnlyMode(reviewPf)}; sees the plan, the change report with the diff, and the verification result as untrusted data (at most ${String(MAX_HANDOFF_CHARS)} characters each); subscription login: ${stepVerdict(reviewPf)}\n` +
         selectionLines(reviewPf) +
         stepDetails(reviewPf) +
+        (args.verify === undefined ? '' : await sandboxLine(args.verifyUnsandboxed === true, deps)) +
         '  guarantees: no commit, no push, no branch or main-tree changes, no workspace creation, no revert or delete, no retries, no provider fallback, no API keys, ultracode never selected\n' +
         '  on failure or cancel: the workspace keeps whatever was written; the final state is reported and nothing is rolled back\n' +
         `  managed policy: ${MANAGED_POLICY_LIMIT}\n` +
@@ -143,9 +145,13 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
           verify: async (signal: AbortSignal | undefined) => {
             const refused = await guard.gate();
             if (refused !== undefined) return refused;
+            const decision = args.verifyUnsandboxed === true ? undefined : (deps.sandbox ?? (await resolveSandbox()));
+            if (decision?.mode === 'unavailable') {
+              return { kind: 'rejected', error: `the test command was not run: no working OS sandbox (${decision.reason}). Run the tests yourself after reading the diff, or add --verify-unsandboxed to run it without isolation (full user rights)` };
+            }
             const outcome = await runVerify(
               { command: verifyCommand, cwd, timeoutMs: args.timeoutMs, ...(signal === undefined ? {} : { signal }) },
-              { ...(deps.runner === undefined ? {} : { runner: deps.runner }), ...(deps.env === undefined ? {} : { env: deps.env }) },
+              { ...(deps.runner === undefined ? {} : { runner: deps.runner }), ...(deps.env === undefined ? {} : { env: deps.env }), ...(decision?.mode === 'sandboxed' ? { sandbox: decision.provider } : {}) },
             );
             return guard.after(outcome);
           },
@@ -172,4 +178,13 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
       `Nothing was committed or pushed. Review the changes yourself: git -C "${cwd}" status && git -C "${cwd}" diff\n`,
   );
   return result.status === 'completed' ? 0 : result.status === 'cancelled' ? 130 : 1;
+}
+
+/** What the verification command would run under on this machine, proven by a real probe, not assumed. */
+async function sandboxLine(unsandboxed: boolean, deps: OrchestrateDeps): Promise<string> {
+  if (unsandboxed) return '  sandbox: OFF by --verify-unsandboxed; the test command would run with your full user rights\n';
+  const decision = deps.sandbox ?? (await resolveSandbox());
+  return decision.mode === 'sandboxed'
+    ? `  sandbox: ${decision.provider.name}, checked just now (write only to the worktree and a private temp dir, no network, credential folders unreadable)\n`
+    : `  sandbox: NONE (${decision.reason}); the test command would be refused unless --verify-unsandboxed is added\n`;
 }

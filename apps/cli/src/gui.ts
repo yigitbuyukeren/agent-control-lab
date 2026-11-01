@@ -218,10 +218,10 @@ const PREVIEW_TTL_MS = 10 * 60 * 1000;
 const MAX_DIRS = 300;
 
 /** The real-run argument vector for a previewed plan-review: the same arguments, confirmed instead of dry-run. */
-export function toRunArgv(dryArgv: readonly string[], confirmVerify = false): string[] {
+export function toRunArgv(dryArgv: readonly string[], confirmVerify = false, unsandboxed = false): string[] {
   const write = dryArgv.includes('--workspace');
   const argv = dryArgv.map((a) => (a === '--dry-run' ? (write ? '--confirm-write' : '--confirm') : a));
-  return write && confirmVerify && argv.includes('--verify-command') ? [...argv, '--confirm-verify'] : argv;
+  return write && confirmVerify && argv.includes('--verify-command') ? [...argv, '--confirm-verify', ...(unsandboxed ? ['--verify-unsandboxed'] : [])] : argv;
 }
 
 const previewKey = (argv: readonly string[]): string => createHash('sha256').update(JSON.stringify(argv)).digest('hex');
@@ -289,7 +289,7 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
     if (write && !isAbsolute(where)) return json(res, 400, { error: 'the worktree must be an absolute path' });
     if (write && b['confirmWrite'] !== true) return json(res, 400, { error: 'plan-implement-review writes files: it needs its own explicit write confirmation' });
     const verify = write && typeof b['verify'] === 'string' && b['verify'] !== '';
-    if (verify && b['confirmVerify'] !== true) return json(res, 400, { error: 'the test command runs newly written code outside any model sandbox: it needs its own explicit confirmation' });
+    if (verify && b['confirmVerify'] !== true) return json(res, 400, { error: 'the test command runs newly written code: it needs its own explicit confirmation' });
     if (manager.active) return json(res, 409, { error: 'a run is already active' });
     const key = previewKey(built.argv);
     const preview = previews.get(key);
@@ -315,7 +315,7 @@ export function createGuiServer(options: GuiOptions): Server & { readonly token:
       const perStep = (typeof timeoutSec === 'number' ? timeoutSec : 600) * 1000;
       const steps = runStepsFor(workflow, built.argv, verify);
       const timed = steps.filter((st) => st.provider !== 'local').length + (verify ? 1 : 0);
-      manager.start(toRunArgv(built.argv, verify), steps, options.watchdogMs ?? perStep * timed + 60_000, write ? () => probe.report(where, before) : undefined);
+      manager.start(toRunArgv(built.argv, verify, b['confirmUnsandboxed'] === true), steps, options.watchdogMs ?? perStep * timed + 60_000, write ? () => probe.report(where, before) : undefined);
       return json(res, 202, manager.snapshot());
     });
   }

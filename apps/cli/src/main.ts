@@ -41,6 +41,7 @@ import {
   type ModelCapability,
   type Selection,
   type SelectionRequest,
+  type SandboxDecision,
   type TaskStore,
   type ProcessRunner,
   type CodexRunOutcome,
@@ -115,6 +116,8 @@ export interface Deps extends PreflightDeps {
   readonly outcomes?: OutcomeStore;
   /** Local task history (`tasks`); the executable supplies the file store. */
   readonly tasks?: TaskStore;
+  /** Sandbox decision for the verification command (tests inject one; otherwise the machine is probed when it runs). */
+  readonly sandbox?: SandboxDecision;
   readonly runner?: ProcessRunner;
   readonly signal?: AbortSignal;
   readonly cwd?: string;

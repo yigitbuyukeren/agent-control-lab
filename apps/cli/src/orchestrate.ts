@@ -1,4 +1,4 @@
-import type { TaskStore } from '@agent-control-lab/core';
+import type { SandboxDecision, TaskStore } from '@agent-control-lab/core';
 import { recordTask } from './task-recorder.ts';
 import {
   DEFAULT_RUN_TIMEOUT_MS,
@@ -38,6 +38,8 @@ export interface OrchestrateIo {
 }
 
 export interface OrchestrateDeps extends PolicyDeps {
+  /** Sandbox decision for the verification command; tests inject one, otherwise the real machine is probed when the command runs. */
+  readonly sandbox?: SandboxDecision;
   readonly tasks?: TaskStore;
   readonly runner?: ProcessRunner;
   readonly signal?: AbortSignal;
@@ -73,6 +75,8 @@ export interface OrchestrateArgs {
   readonly verify?: VerifyCommand;
   /** `plan-implement-review` only: separate permission to run the verification command (newly written code, no model sandbox). */
   readonly confirmVerify?: boolean;
+  /** `plan-implement-review` only: run the verification command without an OS sandbox when none works here. Explicit, never automatic. */
+  readonly verifyUnsandboxed?: boolean;
   /** `plan-implement-review` only: accept that huge ignored directories are compared one level deep. */
   readonly allowPartialIgnored?: boolean;
 }
@@ -97,6 +101,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   const stepProviders: string[] = [];
   const stepProfiles: string[] = [];
   let verifyText: string | undefined;
+  let verifyUnsandboxed = false;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -110,6 +115,8 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       confirmWrite = true;
     } else if (arg === '--confirm-verify') {
       confirmVerify = true;
+    } else if (arg === '--verify-unsandboxed') {
+      verifyUnsandboxed = true;
     } else if (arg === '--allow-partial-ignored-check') {
       allowPartialIgnored = true;
     } else if (arg === '--step-model' || arg === '--step-effort' || arg === '--step-provider' || arg === '--step-profile') {
@@ -166,6 +173,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
     if (!confirmWrite && !dryRun) return 'plan-implement-review needs --confirm-write (it starts real sessions and writes files in the workspace) or --dry-run';
     let verify: VerifyCommand | undefined;
     if (confirmVerify && verifyText === undefined) return '--confirm-verify needs --verify-command';
+    if (verifyUnsandboxed && !confirmVerify) return '--verify-unsandboxed needs --verify-command and --confirm-verify';
     if (verifyText !== undefined && !confirmVerify && !dryRun) {
       return '--verify-command runs the newly written code outside any model sandbox: add --confirm-verify to allow it (or run the tests yourself after reading the diff)';
     }
@@ -174,10 +182,10 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, ...(evalGroup === undefined ? {} : { evalGroup }), steps, workspace, confirmWrite, confirmVerify, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, ...(evalGroup === undefined ? {} : { evalGroup }), steps, workspace, confirmWrite, confirmVerify, verifyUnsandboxed, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
-  if (confirmWrite || confirmVerify || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
-    return '--workspace, --verify-command, --confirm-verify, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
+  if (confirmWrite || confirmVerify || verifyUnsandboxed || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
+    return '--workspace, --verify-command, --confirm-verify, --verify-unsandboxed, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
   }
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';

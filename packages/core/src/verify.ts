@@ -1,3 +1,7 @@
+import { mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { defaultProtectedPaths, type SandboxProvider } from './sandbox.ts';
 import { claudeRunEnv } from './claude-run.ts';
 import { sanitize } from './codex-run.ts';
 import type { StepOutcome } from './orchestration.ts';
@@ -46,6 +50,8 @@ export interface VerifyRequest {
 }
 
 export interface VerifyDeps {
+  /** When set, the command runs inside this proven OS sandbox (write only to the workspace and a private temp dir, no network). */
+  readonly sandbox?: SandboxProvider;
   readonly runner?: ProcessRunner;
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly platform?: NodeJS.Platform;
@@ -59,17 +65,21 @@ export interface VerifyDeps {
  */
 export async function runVerify(request: VerifyRequest, deps: VerifyDeps = {}): Promise<StepOutcome> {
   const { command, args } = request.command;
+  const tmp = deps.sandbox === undefined ? undefined : await realpath(await mkdtemp(join(tmpdir(), 'acl-verify-')));
+  const wrapped = deps.sandbox === undefined || tmp === undefined ? { command, args } : deps.sandbox.wrap({ command, args, cwd: await realpath(request.cwd), tmp, protect: defaultProtectedPaths() });
   const outcome = await (deps.runner ?? runProcess)({
-    command,
-    args: [...args],
+    command: wrapped.command,
+    args: [...wrapped.args],
     cwd: request.cwd,
-    env: claudeRunEnv(deps.env ?? process.env),
+    env: { ...claudeRunEnv(deps.env ?? process.env), ...(tmp === undefined ? {} : { TMPDIR: tmp, TMP: tmp, TEMP: tmp }) },
     timeoutMs: request.timeoutMs,
     maxOutputBytes: 32 * 1024,
     ...(request.signal === undefined ? {} : { signal: request.signal }),
     ...(deps.platform === undefined ? {} : { platform: deps.platform }),
+  }).finally(async () => {
+    if (tmp !== undefined) await rm(tmp, { recursive: true, force: true });
   });
-  const label = [command, ...args].join(' ');
+  const label = [command, ...args].join(' ') + (deps.sandbox === undefined ? ' [NOT sandboxed]' : ` [${deps.sandbox.name}]`);
   switch (outcome.kind) {
     case 'completed': {
       const tail = sanitize(outcome.stdout).trimEnd().slice(-MAX_TAIL_CHARS);

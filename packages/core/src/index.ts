@@ -73,3 +73,4 @@ export * from './instructions.ts';
 export * from './handoff.ts';
 export * from './task-store.ts';
 export * from './worktree-manager.ts';
+export * from './sandbox.ts';

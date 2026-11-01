@@ -253,7 +253,7 @@ describe('GUI real plan-implement-review run against fake CLIs and real Git (no 
     expect(calls().length).toBe(before);
     expect(existsSync(marks)).toBe(false);
     await api('/api/dry-run', b);
-    expect((await api('/api/run', { ...b, confirm: true, confirmWrite: true, confirmVerify: true })).status).toBe(202);
+    expect((await api('/api/run', { ...b, confirm: true, confirmWrite: true, confirmVerify: true, confirmUnsandboxed: true })).status).toBe(202);
     const done = (await settle()) as Run;
     expect(done.status).toBe('completed');
     expect(done.steps.map((s) => s.id)).toEqual(['plan', 'implement', 'inspect', 'verify', 'review']);

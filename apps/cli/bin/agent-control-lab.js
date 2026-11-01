@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { resolveCacheDir } from '@agent-control-lab/core';
+import { resolveCacheDir, TaskStore } from '@agent-control-lab/core';
 import { fileOutcomeStore } from '../src/outcome-store.ts';
 import { run } from '../src/main.ts';
 
 const cacheDir = resolveCacheDir();
+const tasks = cacheDir === undefined ? undefined : new TaskStore(cacheDir);
 
 const controller = new AbortController();
 for (const signal of ['SIGINT', 'SIGTERM']) {
@@ -21,7 +22,7 @@ if (process.argv[2] === 'gui') {
     error: (text) => process.stderr.write(text),
   }, {
     signal: controller.signal,
-    run: (argv, io, signal) => run(argv, io, { signal: signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal]), ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }) }),
+    run: (argv, io, signal) => run(argv, io, { signal: signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal]), ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }), ...(tasks === undefined ? {} : { tasks }) }),
   });
 } else process.exitCode = await run(
   process.argv.slice(2),
@@ -29,5 +30,5 @@ if (process.argv[2] === 'gui') {
     out: (text) => process.stdout.write(text),
     error: (text) => process.stderr.write(text),
   },
-  { signal: controller.signal, ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }) },
+  { signal: controller.signal, ...(cacheDir === undefined ? {} : { outcomes: fileOutcomeStore(cacheDir) }), ...(tasks === undefined ? {} : { tasks }) },
 );

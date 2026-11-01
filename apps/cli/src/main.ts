@@ -1,3 +1,4 @@
+import { runTasksCommand } from './tasks-cmd.ts';
 import { parseInstructionsArgs, runInstructionsCommand } from './instructions-cmd.ts';
 import {
   builtinAdapters,
@@ -39,6 +40,7 @@ import {
   type ModelCapability,
   type Selection,
   type SelectionRequest,
+  type TaskStore,
   type ProcessRunner,
   type CodexRunOutcome,
   type OutcomeStore,
@@ -80,6 +82,7 @@ Commands:
                         Run tool-less claude -p (Pro/Max subscription login only, no API key or third party)
   workspaces --root <dir> [--task "<text>"] [--select <relative path | name>] [--json]    (read-only discovery of repos, monorepo packages and projects under a root; a task only suggests, it never chooses)
   instructions --cwd <dir> [--provider claude|codex|both] [--context] [--json]    (read-only: which CLAUDE.md / AGENTS.md files each provider uses, conflicts, and the bounded context that could be passed on)
+  tasks [list] | show <id> | resume-check <id> | forget <id> | clear    (local task history: no prompts or model output; resume-check re-reads Git before anything continues)
   orchestrate --workflow plan-review --task "<text>" (--dry-run | --confirm [--accept-unverified]) [--cwd <dir>] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|review>=auto|<id>] [--step-effort <plan|review>=auto|<level>]
                         Claude drafts a plan, Codex reviews it read-only (plan/review providers are choosable: --step-provider; every step has a permission profile, --step-profile step=read-only|text-only (Claude only); plan/review default to read-only); stops at the first failure (no retry, no fallback)
   orchestrate --workflow plan-implement-review --task "<text>" --workspace <existing linked worktree> (--dry-run | --confirm-write [--accept-unverified] [--allow-partial-ignored-check]) [--verify-command "<pnpm test>" --confirm-verify] [--timeout <seconds per step>] [--policy economy|balanced|quality] [--model-routing auto|adaptive|measured|research|guided] [--no-record] [--eval-group <label>] [--step-provider <plan|review>=auto|claude|codex] [--step-model <plan|implement|review>=auto|<id>] [--step-effort <plan|implement|review>=auto|<level>]
@@ -108,6 +111,8 @@ export interface Deps extends PreflightDeps {
   readonly cacheDir?: string;
   /** Local outcome records (`outcomes`, `--model-routing measured`); the executable supplies the file store. */
   readonly outcomes?: OutcomeStore;
+  /** Local task history (`tasks`); the executable supplies the file store. */
+  readonly tasks?: TaskStore;
   readonly runner?: ProcessRunner;
   readonly signal?: AbortSignal;
   readonly cwd?: string;
@@ -692,6 +697,8 @@ export async function run(argv: readonly string[], io: Io, deps: Deps = {}): Pro
       }
       return runWorkspacesCommand(args, io);
     }
+    case 'tasks':
+      return runTasksCommand(argv.slice(1), io, deps.tasks, deps.now);
     case 'instructions': {
       const args = parseInstructionsArgs(argv.slice(1));
       if (typeof args === 'string') {

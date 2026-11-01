@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { applyInstructionContext } from './instruction-pass.ts';
 import { recordTask } from './task-recorder.ts';
 import { relative } from 'node:path';
 import {
@@ -128,7 +130,7 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
   );
   const verifyCommand = args.verify;
   const guard = createVerificationGuard({ cwd, git: gitDeps });
-  const steps = planImplementReviewSteps({
+  const built = planImplementReviewSteps({
     task: args.task,
     cwd,
     claudeSelection: stepSelection(planPf),
@@ -160,6 +162,9 @@ export async function runPlanImplementReviewCommand(args: OrchestrateArgs, io: O
     ...(deps.env === undefined ? {} : { env: deps.env }),
     ...(deps.nonce === undefined ? {} : { nonce: deps.nonce }),
   });
+  const withCtx = await applyInstructionContext(built, args.withInstructions === true, cwd, (deps.nonce ?? randomUUID)());
+  io.error(withCtx.line);
+  const steps = withCtx.steps;
   const result = await executeWorkflow(args.workflow, steps, {
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
     ...(deps.clock === undefined ? {} : { clock: deps.clock }),

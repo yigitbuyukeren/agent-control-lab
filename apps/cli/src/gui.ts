@@ -157,6 +157,7 @@ export function buildDryRunArgv(input: unknown): Built {
       argv.push(flag, `${step}=${value}`);
     }
   }
+  if (body['withInstructions'] === true) argv.push('--with-instructions');
   const workspace = body['workspace'];
   const verify = body['verify'];
   if (workflow === 'plan-implement-review') {

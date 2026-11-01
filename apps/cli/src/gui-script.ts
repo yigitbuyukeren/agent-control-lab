@@ -83,6 +83,7 @@ function buildRun(){
  R.wtBox=h('div',{},h('div',{class:'sp'}),h('h4',{},'Yeni çalışma ağacı (isteğe bağlı)'),h('p',{class:'hint'},'Ana depoya dokunmadan, ayrı bir acl/ dalında, depo dışında bağlı bir çalışma ağacı oluşturur. Önce plan gösterilir; oluşturma ayrıca onay ister. Otomatik silme yoktur.'),
   h('label',{class:'l',for:'wtrepo'},'Depo yolu'),R.wtRepo,h('button',{type:'button',class:'chipbtn',onclick:()=>{worktree(false)}},'Planı göster'),R.wtOut);
  R.inBox=h('div',{});
+ R.wi=h('input',{type:'checkbox',id:'wi',onchange:()=>{S.result=null;drawRunBtn()}});
  R.acc=h('input',{type:'checkbox',id:'acc',onchange:()=>{S.accept=R.acc.checked;drawRunBtn()}});
  R.go=h('button',{class:'go',type:'button',onclick:preview},IC('play'),h('span',{},'Önizle (dry run)'));
  R.out=h('div',{class:'stack'});R.runOut=h('div',{class:'stack'});
@@ -107,6 +108,7 @@ function buildRun(){
    h('section',{class:'card lockable'},h('h2',{},IC('spark'),'Model yönlendirme'),h('p',{class:'hint'},'Claude modelleri erişim doğrulanamadığı için hiçbir zaman otomatik sabitlenmez.'),R.routes),
    h('section',{class:'card lockable'},h('h2',{},IC('gauge'),'Politika'),R.polHint,R.pol),
    R.dBox,R.wsBox,R.cwdBox,R.tmoBox,
+   h('section',{class:'card lockable'},h('label',{class:'switch',for:'wi'},R.wi,h('span',{},'Proje talimatlarını (CLAUDE.md / AGENTS.md) sınırlı ve güvenilmeyen veri olarak modele aktar. Kişisel dosyalar ve sır benzeri satırlar aktarılmaz; sağlayıcının zaten okuduğu dosya tekrarlanmaz.'))),
    h('section',{class:'card lockable'},h('label',{class:'switch',for:'acc'},R.acc,h('span',{},'Doğrulanamayan ayarları kabul et ',h('code',{},'--accept-unverified'),'. Önizlemeye, gerçek çalıştırmayı ayrıca onaylarsanız ona da aktarılır. Proxy veya ön kontrol reddi kendiliğinden atlanmaz; bu bayrak yalnızca sizin açık tercihinizdir.'))),
    R.go,R.runBtn,R.runNote)));
  main.append(R.view)}
@@ -170,7 +172,7 @@ function stepCard(s,i){
  return card}
 function row(k,v,why){return h('div',{class:'row'},h('span',{class:'k'},k),h('div',{class:'v'},v,why?h('p',{class:'why'},'CLI gerekçesi: '+why):null))}
 function bodyNow(){const models={},efforts={},providers={},profiles={};for(const id of FLOWS[S.workflow]){const st=S.steps[id];if(st.provider)providers[id]=st.provider;if(st.profile&&!(st.profile==='text-only'&&provOf(id)==='codex'))profiles[id]=st.profile;if(st.model)models[id]=st.model;if(st.effort)efforts[id]=st.effort}
- const b={workflow:S.workflow,task:R.task.value,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,steps:{providers,models,efforts,profiles},workspace:R.ws.value.trim(),verify:R.verify.value.trim(),timeoutSec:S.timeout};
+ const b={withInstructions:R.wi.checked,workflow:S.workflow,task:R.task.value,routing:S.routing,policy:S.policy,acceptUnverified:S.accept,steps:{providers,models,efforts,profiles},workspace:R.ws.value.trim(),verify:R.verify.value.trim(),timeoutSec:S.timeout};
  if(S.workflow==='plan-review')b.cwd=R.cwd.value.trim();return b}
 const paramsKey=()=>JSON.stringify(bodyNow());
 const runActive=()=>!!S.run&&(S.run.status==='running'||S.run.status==='cancelling');

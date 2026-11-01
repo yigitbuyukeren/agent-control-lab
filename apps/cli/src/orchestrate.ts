@@ -1,4 +1,6 @@
 import type { SandboxDecision, TaskStore } from '@agent-control-lab/core';
+import { randomUUID } from 'node:crypto';
+import { applyInstructionContext } from './instruction-pass.ts';
 import { recordTask } from './task-recorder.ts';
 import {
   DEFAULT_RUN_TIMEOUT_MS,
@@ -63,6 +65,8 @@ export interface OrchestrateArgs {
   readonly modelRouting?: ModelRouting;
   /** Record what the run objectively showed (see `outcomes`); `--no-record` turns it off. */
   readonly record?: boolean;
+  /** Pass the project's CLAUDE.md / AGENTS.md text on to the model steps as bounded, untrusted context (`--with-instructions`). */
+  readonly withInstructions?: boolean;
   /** A neutral label for a test group you defined (`--eval-group`): records are tagged with it and measured routing compares only within it. */
   readonly evalGroup?: string;
   /** Model and effort asked for each step (`--step-model`, `--step-effort`); `auto` keeps the provider default. */
@@ -102,6 +106,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   const stepProfiles: string[] = [];
   let verifyText: string | undefined;
   let verifyUnsandboxed = false;
+  let withInstructions = false;
   let timeoutMs = DEFAULT_RUN_TIMEOUT_MS;
   for (let i = 0; i < args.length; i += 1) {
     const arg = args[i];
@@ -115,6 +120,8 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       confirmWrite = true;
     } else if (arg === '--confirm-verify') {
       confirmVerify = true;
+    } else if (arg === '--with-instructions') {
+      withInstructions = true;
     } else if (arg === '--verify-unsandboxed') {
       verifyUnsandboxed = true;
     } else if (arg === '--allow-partial-ignored-check') {
@@ -182,7 +189,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
       if (typeof parsed === 'string') return parsed;
       verify = parsed;
     }
-    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, ...(evalGroup === undefined ? {} : { evalGroup }), steps, workspace, confirmWrite, confirmVerify, verifyUnsandboxed, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
+    return { workflow, task, cwd: undefined, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, withInstructions, ...(evalGroup === undefined ? {} : { evalGroup }), steps, workspace, confirmWrite, confirmVerify, verifyUnsandboxed, allowPartialIgnored, ...(verify === undefined ? {} : { verify }) };
   }
   if (confirmWrite || confirmVerify || verifyUnsandboxed || allowPartialIgnored || workspace !== undefined || verifyText !== undefined) {
     return '--workspace, --verify-command, --confirm-verify, --verify-unsandboxed, --allow-partial-ignored-check and --confirm-write belong to plan-implement-review only';
@@ -190,7 +197,7 @@ export function parseOrchestrateArgs(args: readonly string[]): OrchestrateArgs |
   if (!confirm && !dryRun) {
     return 'orchestrate needs --confirm: it starts real Claude and Codex sessions that use your subscription quota (or --dry-run to only show the plan)';
   }
-  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, ...(evalGroup === undefined ? {} : { evalGroup }), steps };
+  return { workflow, task, cwd, timeoutMs, dryRun, acceptUnverified, policy, modelRouting, record, withInstructions, ...(evalGroup === undefined ? {} : { evalGroup }), steps };
 }
 
 export function seconds(ms: number): string {
@@ -307,7 +314,7 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
   io.error(
     `orchestrating ${args.workflow} in ${cwd} (${planPf.provider} plans, ${reviewPf.provider} reviews; no retries, no fallback)\n` + pfs.map(stepWarnings).join(''),
   );
-  const steps = planReviewSteps({
+  const built = planReviewSteps({
     task: args.task,
     cwd,
     claudeSelection: stepSelection(planPf),
@@ -319,6 +326,9 @@ export async function runOrchestrateCommand(args: OrchestrateArgs, io: Orchestra
     ...(deps.env === undefined ? {} : { env: deps.env }),
     ...(deps.nonce === undefined ? {} : { nonce: deps.nonce }),
   });
+  const withCtx = await applyInstructionContext(built, args.withInstructions === true, cwd, (deps.nonce ?? randomUUID)());
+  io.error(withCtx.line);
+  const steps = withCtx.steps;
   const result = await executeWorkflow(args.workflow, steps, {
     ...(deps.signal === undefined ? {} : { signal: deps.signal }),
     ...(deps.clock === undefined ? {} : { clock: deps.clock }),

@@ -332,3 +332,18 @@ export async function buildInstructionContext(resolved: ResolvedInstructions, op
   }
   return { text: parts.join('\n\n'), included, excluded };
 }
+
+/**
+ * Project context for one provider: its own unloaded or unverifiable files plus the other agent's project files,
+ * each distinct text once, project scope only (never user-level or local files), bounded and with secret-looking
+ * lines removed. A file the provider is documented to read by itself is not repeated.
+ */
+export async function instructionContextFor(target: InstructionProvider, cwd: string, options: ContextOptions & { readonly home?: string | undefined; readonly platform?: NodeJS.Platform } = {}): Promise<InstructionContext> {
+  const resolveOptions: ResolveOptions = { ...('home' in options ? { home: options.home } : {}), ...(options.platform === undefined ? {} : { platform: options.platform }), claudeMode: 'restricted' };
+  const own = await resolveInstructions(target, cwd, resolveOptions);
+  const other = await resolveInstructions(target === 'claude' ? 'codex' : 'claude', cwd, resolveOptions);
+  const known = new Set(own.entries.filter((e) => e.status === 'loaded' && e.sha256 !== undefined).map((e) => e.sha256 ?? ''));
+  // The other agent's files are offered as if unloaded for this target, unless the target already reads identical text.
+  const borrowed = other.entries.filter((e) => e.sha256 !== undefined && !known.has(e.sha256) && e.status !== 'shadowed').map((e) => ({ ...e, status: 'unknown' as const }));
+  return buildInstructionContext({ ...own, entries: [...own.entries, ...borrowed] }, options);
+}

@@ -1,5 +1,8 @@
 import { lstat, readFile, readdir, realpath } from 'node:fs/promises';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative as relativePath, sep } from 'node:path';
+
+/** Relative paths are always shown and compared with forward slashes, on every platform. */
+const relative = (from: string, to: string): string => relativePath(from, to).split(sep).join('/');
 
 /**
  * Read-only workspace discovery under a user-chosen root. It lists directory names and reads only a few

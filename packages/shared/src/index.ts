@@ -1,4 +1,4 @@
-export const VERSION = '0.1.0';
+export const VERSION = '1.0.0';
 
 export type Result<T, E = string> =
   | { readonly ok: true; readonly value: T }

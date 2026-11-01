@@ -83,3 +83,26 @@ describe('task history', () => {
     expect((await run(['tasks', 'bogus'], d.io, { tasks: store }))).toBe(2);
   });
 });
+
+describe('worktree command', () => {
+  it('shows a plan by default, creates only with --confirm, lists and removes', async () => {
+    const { runWorktreeCommand } = await import('./worktree-cmd.ts');
+    const fx = makeWorktreeFixture();
+    const data = mkdtempSync(join(tmpdir(), 'acl wtc '));
+    const a = io();
+    expect(await runWorktreeCommand(['create', '--repo', fx.main], a.io, data)).toBe(0);
+    expect(a.out.join('')).toContain('nothing was created');
+    const b = io();
+    expect(await runWorktreeCommand(['create', '--repo', fx.main, '--confirm'], b.io, data)).toBe(0);
+    const c = io();
+    await runWorktreeCommand(['list'], c.io, data);
+    const id = /(t-[0-9a-f]{12})/.exec(c.out.join(''))?.[1] ?? '';
+    expect(id).not.toBe('');
+    const d = io();
+    expect(await runWorktreeCommand(['remove', id], d.io, data)).toBe(0);
+    expect(d.out.join('')).toContain('add --confirm');
+    expect(await runWorktreeCommand(['remove', id, '--confirm'], d.io, data)).toBe(0);
+    expect(await runWorktreeCommand(['bogus'], d.io, data)).toBe(2);
+    expect(await runWorktreeCommand(['list'], d.io, undefined)).toBe(1);
+  });
+});

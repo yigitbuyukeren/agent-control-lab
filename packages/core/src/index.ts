@@ -11,7 +11,7 @@ export function getInfo(env: { node: string; platform: string }): LabInfo {
   return { name: 'agent-control-lab', version: VERSION, ...env };
 }
 
-export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'outcomes' | 'run' | 'orchestrate' | 'workspaces' | 'instructions' | 'tasks'> {
+export function parseCommand(argv: readonly string[]): Result<'help' | 'version' | 'info' | 'providers' | 'auth-status' | 'quota' | 'statusline-collect' | 'route' | 'models' | 'outcomes' | 'run' | 'orchestrate' | 'workspaces' | 'instructions' | 'tasks' | 'worktree'> {
   const [first] = argv;
   if (first === undefined || first === 'help' || first === '--help' || first === '-h') {
     return ok('help');
@@ -30,6 +30,7 @@ export function parseCommand(argv: readonly string[]): Result<'help' | 'version'
   if (first === 'workspaces') return ok('workspaces');
   if (first === 'instructions') return ok('instructions');
   if (first === 'tasks') return ok('tasks');
+  if (first === 'worktree') return ok('worktree');
   return err(`unknown command: ${first}`);
 }
 
@@ -71,3 +72,4 @@ export * from './claude-integration.ts';
 export * from './instructions.ts';
 export * from './handoff.ts';
 export * from './task-store.ts';
+export * from './worktree-manager.ts';

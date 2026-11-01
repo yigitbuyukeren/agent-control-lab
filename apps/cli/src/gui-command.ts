@@ -1,3 +1,4 @@
+import { basename } from 'node:path';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { createGuiServer, defaultClaudePaths, fileClaudeIntegration, GUI_DEFAULT_PORT, listenGui, type GuiRun } from './gui.ts';
@@ -19,7 +20,7 @@ export async function startGui(args: readonly string[], io: Io, deps: { readonly
     io.error(port);
     return 2;
   }
-  const server = createGuiServer({ run: deps.run, claude: fileClaudeIntegration(defaultClaudePaths(realpathSync(fileURLToPath(new URL('../bin/agent-control-lab.js', import.meta.url))))) });
+  const server = createGuiServer({ run: deps.run, claude: fileClaudeIntegration(defaultClaudePaths(realpathSync(cliEntryPath()))) });
   let bound: number;
   try {
     bound = await listenGui(server, port);
@@ -38,4 +39,10 @@ export async function startGui(args: readonly string[], io: Io, deps: { readonly
   server.closeAllConnections();
   await new Promise<void>((resolve) => server.close(() => { resolve(); }));
   return 0;
+}
+
+/** The executable that Claude's statusLine should call: the bundled file itself when packaged, the bin script from source. */
+function cliEntryPath(): string {
+  const self = fileURLToPath(import.meta.url);
+  return basename(self) === 'agent-control-lab.js' ? self : fileURLToPath(new URL('../bin/agent-control-lab.js', import.meta.url));
 }

@@ -1,4 +1,8 @@
+import { existsSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { runVerify } from './verify.ts';
 import { bwrapSandbox, defaultProtectedPaths, detectSandbox, macSandbox, probeSandbox, resolveSandbox } from './sandbox.ts';
 
 describe('sandbox detection', () => {
@@ -46,10 +50,6 @@ describe('sandbox wrapping', () => {
 
 describe('sandboxed verification', () => {
   it.runIf(process.platform === 'darwin')('runs a real command with writes limited to the workspace and a private temp dir', async () => {
-    const { mkdtempSync, realpathSync, existsSync, writeFileSync } = await import('node:fs');
-    const { tmpdir } = await import('node:os');
-    const { join } = await import('node:path');
-    const { runVerify } = await import('./verify.ts');
     const work = realpathSync.native(mkdtempSync(join(tmpdir(), 'acl vw ')));
     const outside = realpathSync.native(mkdtempSync(join(tmpdir(), 'acl vo ')));
     writeFileSync(join(work, 'ok.js'), `require('fs').writeFileSync('inside.txt','x')`);
@@ -76,6 +76,12 @@ describe('sandbox probe', () => {
   });
   it.runIf(process.platform === 'darwin')('passes on macOS with the real sandbox-exec', async () => {
     expect(await resolveSandbox()).toMatchObject({ mode: 'sandboxed' });
+  }, 60_000);
+  it('gives a consistent, honest decision on every platform (never sandboxed without a passed probe)', async () => {
+    const d = await resolveSandbox();
+    if (d.mode === 'unavailable') expect(d.reason.length).toBeGreaterThan(5);
+    else expect(['macOS sandbox-exec', 'bubblewrap']).toContain(d.provider.name);
+    if (process.platform === 'win32') expect(d.mode).toBe('unavailable');
   }, 60_000);
   it.runIf(process.platform === 'win32')('is unavailable on Windows', async () => {
     expect(await resolveSandbox()).toMatchObject({ mode: 'unavailable' });

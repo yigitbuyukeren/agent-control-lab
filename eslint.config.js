@@ -2,7 +2,7 @@ import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['**/node_modules/**', '**/dist/**', 'coverage/**'] },
+  { ignores: ['**/node_modules/**', '**/dist/**', 'release/**', 'coverage/**'] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {
@@ -14,11 +14,11 @@ export default tseslint.config(
     },
   },
   {
-    files: ['**/*.js'],
+    files: ['**/*.js', 'scripts/*.mjs'],
     ...tseslint.configs.disableTypeChecked,
   },
   {
-    files: ['**/*.js'],
-    languageOptions: { globals: { process: 'readonly', AbortController: 'readonly', AbortSignal: 'readonly' } },
+    files: ['**/*.js', 'scripts/*.mjs'],
+    languageOptions: { globals: { process: 'readonly', console: 'readonly', AbortController: 'readonly', AbortSignal: 'readonly' } },
   },
 );

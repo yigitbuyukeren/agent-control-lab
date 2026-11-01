@@ -5,17 +5,23 @@
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@12.16.1",
-  "engines": { "node": ">=24" },
+  "engines": {
+    "node": ">=24"
+  },
   "scripts": {
     "cli": "node apps/cli/bin/agent-control-lab.js",
     "test": "vitest run",
     "lint": "eslint .",
     "typecheck": "pnpm -r typecheck",
-    "check": "pnpm typecheck && pnpm lint && pnpm test"
+    "check": "pnpm typecheck && pnpm lint && pnpm test",
+    "build": "node scripts/build.mjs",
+    "pack:release": "node scripts/pack.mjs",
+    "smoke:pack": "node scripts/smoke-pack.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.0.0",
     "@types/node": "^24.0.0",
+    "esbuild": "0.28.2",
     "eslint": "^9.0.0",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.0.0",

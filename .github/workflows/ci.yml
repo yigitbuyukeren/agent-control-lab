@@ -28,3 +28,13 @@ jobs:
       - run: pnpm lint
       - run: pnpm test
       - run: pnpm cli version
+      - run: pnpm pack:release
+      - run: pnpm smoke:pack
+      - name: Upload package
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-control-lab-package
+          path: |
+            release/*.tgz
+            release/*.sha256
